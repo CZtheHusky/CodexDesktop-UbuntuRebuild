@@ -2,7 +2,7 @@
   "name": "codex-rebuild",
   "productName": "Codex",
   "version": "26.623.141536",
-  "description": "Codex Electron App - Cross-platform Build",
+  "description": "Codex Desktop Ubuntu rebuild",
   "main": "src/.vite/build/bootstrap.js",
   "scripts": {
     "start": "node scripts/start-dev.js",
@@ -14,7 +14,7 @@
     "verify:linux": "node scripts/verify-linux-desktop.js --stage prepared",
     "forge:package": "electron-forge package",
     "forge:make": "electron-forge make",
-    "build": "npm run build:mac-arm64",
+    "build": "npm run build:linux-x64",
     "build:mac-arm64": "node scripts/build-from-upstream.js --platform mac-arm64",
     "build:mac-x64": "node scripts/build-from-upstream.js --platform mac-x64",
     "build:mac": "npm run build:mac-arm64 && npm run build:mac-x64",
