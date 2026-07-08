@@ -234,10 +234,18 @@ function verifyPrepared() {
   const { code } = findMainBundle();
   assert(code.includes("linuxFeatureResult"), "Linux node_repl feature gate patch is missing");
   assert(code.includes("Thread catalog startup sync failed"), "Thread catalog startup sync patch is missing");
-  assert(code.includes("case`linux-window-control`"), "Linux window control message patch is missing");
+  assert(!code.includes("case`linux-window-control`"), "Linux custom window control IPC must not be present");
   assert(
     code.includes("n===`win32`?{titleBarStyle:`hidden`,titleBarOverlay:f9(r)}:{titleBarStyle:`default`}"),
     "Linux primary native titlebar patch is missing"
+  );
+  assert(
+    code.includes("show:l,parent:p,...m===void 0?{}:{focusable:m},...process.platform===`win32`||process.platform===`linux`?{autoHideMenuBar:!0}:{}"),
+    "Linux window focusable default patch is missing"
+  );
+  assert(
+    !code.includes("show:l,parent:p,focusable:m,...process.platform===`win32`||process.platform===`linux`?{autoHideMenuBar:!0}:{}"),
+    "Linux windows still pass undefined focusable to BrowserWindow"
   );
   assert(code.includes("process.platform===`darwin`&&e.moveTop()"), "Linux hotkey window top policy patch is missing");
   assert(
@@ -263,7 +271,10 @@ function verifyPrepared() {
   const webview = findWebviewAppBundle();
   assert(webview.code.includes("r===!1||a==null?null"), "Renderer local thread catalog bridge patch is missing");
   const appShell = findWebviewAppShellBundle();
-  assert(appShell.code.includes("data-codex-linux-window-controls"), "Renderer Linux window controls patch is missing");
+  assert(
+    !appShell.code.includes("data-codex-linux-window-controls"),
+    "Renderer Linux custom window controls must not be present"
+  );
   const sidebarState = findSidebarStateBundle();
   assert(
     sidebarState.code.includes("__codexDesktopLinuxStateDbSidebar"),
@@ -356,10 +367,21 @@ function verifyPackage(platform) {
     const appAsarContent = fs.readFileSync(appAsar);
     assert(appAsarContent.includes(Buffer.from("linuxFeatureResult")), "Packaged app.asar is missing Linux node_repl feature gate patch");
     assert(appAsarContent.includes(Buffer.from("Thread catalog startup sync failed")), "Packaged app.asar is missing thread catalog startup sync patch");
-    assert(appAsarContent.includes(Buffer.from("case`linux-window-control`")), "Packaged app.asar is missing Linux window control message patch");
+    assert(
+      !appAsarContent.includes(Buffer.from("case`linux-window-control`")),
+      "Packaged app.asar must not contain Linux custom window control IPC"
+    );
     assert(
       appAsarContent.includes(Buffer.from("n===`win32`?{titleBarStyle:`hidden`,titleBarOverlay:f9(r)}:{titleBarStyle:`default`}")),
       "Packaged app.asar is missing Linux primary native titlebar patch"
+    );
+    assert(
+      appAsarContent.includes(Buffer.from("show:l,parent:p,...m===void 0?{}:{focusable:m},...process.platform===`win32`||process.platform===`linux`?{autoHideMenuBar:!0}:{}")),
+      "Packaged app.asar is missing Linux window focusable default patch"
+    );
+    assert(
+      !appAsarContent.includes(Buffer.from("show:l,parent:p,focusable:m,...process.platform===`win32`||process.platform===`linux`?{autoHideMenuBar:!0}:{}")),
+      "Packaged app.asar still passes undefined focusable to BrowserWindow"
     );
     assert(
       appAsarContent.includes(Buffer.from("process.platform===`darwin`&&e.moveTop()")),
@@ -387,8 +409,8 @@ function verifyPackage(platform) {
     );
     assert(appAsarContent.includes(Buffer.from("r===!1||a==null?null")), "Packaged app.asar is missing renderer local thread catalog bridge patch");
     assert(
-      appAsarContent.includes(Buffer.from("data-codex-linux-window-controls")),
-      "Packaged app.asar is missing renderer Linux window controls patch"
+      !appAsarContent.includes(Buffer.from("data-codex-linux-window-controls")),
+      "Packaged app.asar must not contain renderer Linux custom window controls"
     );
     assert(
       appAsarContent.includes(Buffer.from("__codexDesktopLinuxStateDbSidebar")),

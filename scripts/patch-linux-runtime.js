@@ -58,26 +58,6 @@ function findWebviewAppBundle() {
   fail("Could not locate Linux webview app bundle");
 }
 
-function findWebviewAppShellBundle() {
-  if (!fs.existsSync(WEBVIEW_ASSETS_DIR)) {
-    fail(`Missing webview assets dir: ${path.relative(PROJECT_ROOT, WEBVIEW_ASSETS_DIR)}`);
-  }
-
-  const candidates = fs
-    .readdirSync(WEBVIEW_ASSETS_DIR)
-    .filter((name) => name.endsWith(".js"))
-    .map((name) => path.join(WEBVIEW_ASSETS_DIR, name));
-
-  for (const file of candidates) {
-    const code = fs.readFileSync(file, "utf8");
-    if (code.includes("(0,OG.jsx)(L6t,{})") && code.includes("className:`relative flex flex-col`")) {
-      return file;
-    }
-  }
-
-  fail("Could not locate Linux webview app shell bundle");
-}
-
 function findSidebarStateBundle() {
   if (!fs.existsSync(WEBVIEW_ASSETS_DIR)) {
     fail(`Missing webview assets dir: ${path.relative(PROJECT_ROOT, WEBVIEW_ASSETS_DIR)}`);
@@ -211,22 +191,6 @@ function patchThreadCatalogStartupSync(code) {
   return replaceOnce(code, needle, replacement, "thread catalog startup sync");
 }
 
-function patchLinuxWindowControlMessage(code) {
-  if (code.includes("case`linux-window-control`")) {
-    console.log("  [ok] Linux window control message already patched");
-    return code;
-  }
-
-  const needle =
-    "case`electron-window-focus-request`:{let t=a.BrowserWindow.fromWebContents(e);this.windowManager.sendMessageToWebContents(e,{type:`electron-window-focus-changed`,isFocused:t?.isFocused()??!1});break}";
-  const replacement =
-    "case`linux-window-control`:{let t=a.BrowserWindow.fromWebContents(e);if(process.platform===`linux`&&t&&!t.isDestroyed())switch(n.action){case`minimize`:t.minimize();break;case`toggle-maximize`:t.isMaximized()?t.unmaximize():t.maximize();break;case`close`:t.close();break}break}" +
-    needle;
-
-  console.log("  [patch] Add Linux window control message handler");
-  return replaceOnce(code, needle, replacement, "linux window control message");
-}
-
 function patchLinuxWindowBehavior(code) {
   let next = code;
 
@@ -240,6 +204,18 @@ function patchLinuxWindowBehavior(code) {
 
     console.log("  [patch] Use native titlebar for Linux primary windows");
     next = replaceOnce(next, needle, replacement, "linux primary window titlebar");
+  }
+
+  if (next.includes("show:l,parent:p,...m===void 0?{}:{focusable:m},...process.platform===`win32`||process.platform===`linux`?{autoHideMenuBar:!0}:{}")) {
+    console.log("  [ok] Linux window focusable default already patched");
+  } else {
+    const needle =
+      "show:l,parent:p,focusable:m,...process.platform===`win32`||process.platform===`linux`?{autoHideMenuBar:!0}:{}";
+    const replacement =
+      "show:l,parent:p,...m===void 0?{}:{focusable:m},...process.platform===`win32`||process.platform===`linux`?{autoHideMenuBar:!0}:{}";
+
+    console.log("  [patch] Preserve default focusability for Linux windows");
+    next = replaceOnce(next, needle, replacement, "linux window focusable default");
   }
 
   if (next.includes("process.platform===`darwin`&&e.moveTop()")) {
@@ -300,20 +276,6 @@ function patchRendererCatalogBridge(code) {
 
   console.log("  [patch] Enable renderer local thread catalog bridge");
   return replaceOnce(code, needle, replacement, "renderer local thread catalog bridge");
-}
-
-function patchRendererLinuxWindowControls(code) {
-  if (code.includes("data-codex-linux-window-controls")) {
-    console.log("  [ok] Renderer Linux window controls already patched");
-    return code;
-  }
-
-  const needle = "(0,OG.jsx)(L6t,{}),(0,OG.jsxs)(Nf.div,{ref:o,style:pe,className:`relative flex flex-col`";
-  const controls =
-    "(0,OG.jsx)(L6t,{}),typeof navigator<`u`&&/Linux/.test(navigator.platform)?(0,OG.jsxs)(`div`,{\"data-codex-linux-window-controls\":`true`,className:`no-drag`,style:{position:`fixed`,top:0,right:0,zIndex:9999,display:`flex`,height:32,alignItems:`center`,background:`rgba(245,245,245,.92)`,color:`#111`,boxShadow:`0 1px 2px rgba(0,0,0,.18)`},children:[(0,OG.jsx)(`button`,{type:`button`,title:`Minimize`,\"aria-label\":`Minimize`,style:{width:36,height:32,border:0,background:`transparent`,color:`inherit`,fontSize:13,cursor:`default`},onClick:()=>ht.dispatchMessage(`linux-window-control`,{action:`minimize`}),children:`_`}),(0,OG.jsx)(`button`,{type:`button`,title:`Maximize`,\"aria-label\":`Maximize`,style:{width:36,height:32,border:0,background:`transparent`,color:`inherit`,fontSize:13,cursor:`default`},onClick:()=>ht.dispatchMessage(`linux-window-control`,{action:`toggle-maximize`}),children:`[]`}),(0,OG.jsx)(`button`,{type:`button`,title:`Close`,\"aria-label\":`Close`,style:{width:40,height:32,border:0,background:`transparent`,color:`inherit`,fontSize:13,cursor:`default`},onClick:()=>ht.dispatchMessage(`linux-window-control`,{action:`close`}),children:`x`})]}):null,(0,OG.jsxs)(Nf.div,{ref:o,style:pe,className:`relative flex flex-col`";
-
-  console.log("  [patch] Add renderer Linux window controls");
-  return replaceOnce(code, needle, controls, "renderer Linux window controls");
 }
 
 function patchRendererStateDbSidebar(code) {
@@ -387,7 +349,6 @@ function main() {
   const original = fs.readFileSync(bundle, "utf8");
   let code = patchLinuxFeatureGate(original);
   code = patchThreadCatalogStartupSync(code);
-  code = patchLinuxWindowControlMessage(code);
   code = patchLinuxWindowBehavior(code);
 
   if (code !== original) {
@@ -407,18 +368,6 @@ function main() {
     console.log("  [ok] Linux webview runtime patches applied");
   } else {
     console.log("  [ok] No webview changes needed");
-  }
-
-  const appShellBundle = findWebviewAppShellBundle();
-  console.log(`-- patch-linux-runtime: ${path.relative(PROJECT_ROOT, appShellBundle)}`);
-  const originalAppShell = fs.readFileSync(appShellBundle, "utf8");
-  const appShellCode = patchRendererLinuxWindowControls(originalAppShell);
-
-  if (appShellCode !== originalAppShell) {
-    fs.writeFileSync(appShellBundle, appShellCode, "utf8");
-    console.log("  [ok] Linux app shell patches applied");
-  } else {
-    console.log("  [ok] No app shell changes needed");
   }
 
   const sidebarStateBundle = findSidebarStateBundle();
