@@ -199,6 +199,30 @@ function findSidebarAggregationBundle() {
   fail("Could not locate Linux sidebar aggregation bundle");
 }
 
+function findSidebarProjectGroupsBundle() {
+  const assetsDir = path.join(SRC, "webview", "assets");
+  assert(fs.existsSync(assetsDir), `Missing Linux webview assets dir: ${rel(assetsDir)}`);
+
+  const candidates = fs
+    .readdirSync(assetsDir)
+    .filter((name) => name.endsWith(".js"))
+    .map((name) => path.join(assetsDir, name));
+
+  for (const file of candidates) {
+    const code = fs.readFileSync(file, "utf8");
+    if (
+      code.includes("function Gr(") &&
+      code.includes("function Kr(") &&
+      code.includes("sidebar_workspace_task_groups_task_dirs") &&
+      code.includes("function Yr(")
+    ) {
+      return { file, code };
+    }
+  }
+
+  fail("Could not locate Linux sidebar project groups bundle");
+}
+
 function verifyPrepared() {
   console.log("-- verify-linux-desktop: prepared");
 
@@ -250,10 +274,19 @@ function verifyPrepared() {
     threadStore.code.includes("__codexDesktopLinuxSidebarThreadSummaries"),
     "Renderer sidebar thread summaries patch is missing"
   );
+  const sidebarProjectGroups = findSidebarProjectGroupsBundle();
+  assert(
+    sidebarProjectGroups.code.includes("__codexDesktopLinuxThreadCwdWorkspaceRoots"),
+    "Renderer Linux thread cwd workspace roots patch is missing"
+  );
   const sidebarAggregation = findSidebarAggregationBundle();
   assert(
-    sidebarAggregation.code.includes("__codexDesktopLinuxUngroupedSidebarFallback"),
-    "Renderer ungrouped sidebar fallback patch is missing"
+    sidebarAggregation.code.includes("let L=r?I:[],R=L.map(e=>e.task.key)"),
+    "Renderer native sidebar chat/project split is missing"
+  );
+  assert(
+    !sidebarAggregation.code.includes("__codexDesktopLinuxUngroupedSidebarFallback"),
+    "Renderer ungrouped sidebar fallback must not be present"
   );
   ok("Linux runtime bundle patches are present");
 
@@ -366,8 +399,16 @@ function verifyPackage(platform) {
       "Packaged app.asar is missing renderer sidebar thread summaries patch"
     );
     assert(
-      appAsarContent.includes(Buffer.from("__codexDesktopLinuxUngroupedSidebarFallback")),
-      "Packaged app.asar is missing renderer ungrouped sidebar fallback patch"
+      appAsarContent.includes(Buffer.from("__codexDesktopLinuxThreadCwdWorkspaceRoots")),
+      "Packaged app.asar is missing renderer Linux thread cwd workspace roots patch"
+    );
+    assert(
+      appAsarContent.includes(Buffer.from("let L=r?I:[],R=L.map(e=>e.task.key)")),
+      "Packaged app.asar is missing native sidebar chat/project split"
+    );
+    assert(
+      !appAsarContent.includes(Buffer.from("__codexDesktopLinuxUngroupedSidebarFallback")),
+      "Packaged app.asar must not contain renderer ungrouped sidebar fallback"
     );
     assert(fs.existsSync(path.join(resources, "codex")), "Packaged Codex CLI binary is missing");
     assert(fs.existsSync(path.join(resources, "rg")), "Packaged rg binary is missing");

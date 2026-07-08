@@ -140,13 +140,38 @@ function findSidebarAggregationBundle() {
     if (
       code.includes("visibleRecentChatItems:L") &&
       code.includes("visibleSidebarSectionKeys:ne") &&
-      code.includes("let L=r?I:[]")
+      code.includes("let L=r?")
     ) {
       return file;
     }
   }
 
   fail("Could not locate Linux sidebar aggregation bundle");
+}
+
+function findSidebarProjectGroupsBundle() {
+  if (!fs.existsSync(WEBVIEW_ASSETS_DIR)) {
+    fail(`Missing webview assets dir: ${path.relative(PROJECT_ROOT, WEBVIEW_ASSETS_DIR)}`);
+  }
+
+  const candidates = fs
+    .readdirSync(WEBVIEW_ASSETS_DIR)
+    .filter((name) => name.endsWith(".js"))
+    .map((name) => path.join(WEBVIEW_ASSETS_DIR, name));
+
+  for (const file of candidates) {
+    const code = fs.readFileSync(file, "utf8");
+    if (
+      code.includes("function Gr(") &&
+      code.includes("function Kr(") &&
+      code.includes("sidebar_workspace_task_groups_task_dirs") &&
+      code.includes("function Yr(")
+    ) {
+      return file;
+    }
+  }
+
+  fail("Could not locate Linux sidebar project groups bundle");
 }
 
 function replaceOnce(code, needle, replacement, label) {
@@ -321,19 +346,38 @@ function patchRendererSidebarThreadSummaries(code) {
   return replaceOnce(code, needle, replacement, "renderer sidebar thread summaries");
 }
 
-function patchRendererUngroupedSidebarFallback(code) {
-  if (code.includes("__codexDesktopLinuxUngroupedSidebarFallback")) {
-    console.log("  [ok] Renderer ungrouped sidebar fallback already patched");
+function patchRendererProjectGroupsFromThreadCwds(code) {
+  if (code.includes("__codexDesktopLinuxThreadCwdWorkspaceRoots")) {
+    console.log("  [ok] Renderer Linux thread cwd workspace roots already patched");
     return code;
   }
 
   const needle =
-    "let L=r?I:[],R=L.map(e=>e.task.key),z=!s&&i!==`connection`&&(L.length>0||e.canStartProjectlessChat),";
+    "b=Object.fromEntries(g.map(({hostId:e})=>{let t=new Map((h[e]??$).map(e=>[k(e.dir),e]));return y[e]?.forEach(e=>{t.set(k(e.dir),e)}),[e,Array.from(t.values())]})),x=Vr([...Gr(n.data,h[o]??$,t(F,void 0).data?.codexHome),...Kr(M(t,l.LOCAL_PROJECTS)),...Jr(c,t(K))],M(t,l.PROJECT_ORDER)),";
   const replacement =
+    "b=Object.fromEntries(g.map(({hostId:e})=>{let t=new Map((h[e]??$).map(e=>[k(e.dir),e]));return y[e]?.forEach(e=>{t.set(k(e.dir),e)}),[e,Array.from(t.values())]})),linuxWorkspaceRootData=globalThis.__codexDesktopLinuxThreadCwdWorkspaceRoots!==!1?{...n.data,roots:[...new Set([...(n.data?.roots??[]),...s.flatMap(t=>t.kind===`local`&&(t.hostId==null||t.hostId===`local`)&&t.cwd&&t.cwd!==`~`&&t.workspaceKind!==`projectless`&&!(Array.isArray(e.projectlessThreadIds)&&e.projectlessThreadIds.includes(t.conversationId))?[k(t.cwd)]:[])])]}:n.data,x=Vr([...Gr(linuxWorkspaceRootData,h[o]??$,t(F,void 0).data?.codexHome),...Kr(M(t,l.LOCAL_PROJECTS)),...Jr(c,t(K))],M(t,l.PROJECT_ORDER)),";
+
+  console.log("  [patch] Feed Linux local thread cwd roots into project grouping");
+  return replaceOnce(code, needle, replacement, "renderer Linux thread cwd workspace roots");
+}
+
+function patchRendererNativeSidebarChats(code) {
+  const original =
+    "let L=r?I:[],R=L.map(e=>e.task.key),z=!s&&i!==`connection`&&(L.length>0||e.canStartProjectlessChat),";
+  const fallback =
     "let L=r?(globalThis.__codexDesktopLinuxUngroupedSidebarFallback!==!1&&!D&&I.length===0&&E.length===0&&F.length>0?F:I):[],R=L.map(e=>e.task.key),z=!s&&i!==`connection`&&(L.length>0||e.canStartProjectlessChat),";
 
-  console.log("  [patch] Show ungrouped Linux local threads in sidebar fallback");
-  return replaceOnce(code, needle, replacement, "renderer ungrouped sidebar fallback");
+  if (code.includes(original)) {
+    console.log("  [ok] Renderer sidebar chat/project split is native");
+    return code;
+  }
+
+  if (code.includes(fallback)) {
+    console.log("  [patch] Restore native sidebar chat/project split");
+    return replaceOnce(code, fallback, original, "renderer native sidebar chat/project split");
+  }
+
+  fail("renderer native sidebar chat/project split: patch anchor not found");
 }
 
 function main() {
@@ -401,14 +445,26 @@ function main() {
     console.log("  [ok] No thread store changes needed");
   }
 
+  const sidebarProjectGroupsBundle = findSidebarProjectGroupsBundle();
+  console.log(`-- patch-linux-runtime: ${path.relative(PROJECT_ROOT, sidebarProjectGroupsBundle)}`);
+  const originalSidebarProjectGroups = fs.readFileSync(sidebarProjectGroupsBundle, "utf8");
+  const sidebarProjectGroupsCode = patchRendererProjectGroupsFromThreadCwds(originalSidebarProjectGroups);
+
+  if (sidebarProjectGroupsCode !== originalSidebarProjectGroups) {
+    fs.writeFileSync(sidebarProjectGroupsBundle, sidebarProjectGroupsCode, "utf8");
+    console.log("  [ok] Linux sidebar project grouping patches applied");
+  } else {
+    console.log("  [ok] No sidebar project grouping changes needed");
+  }
+
   const sidebarAggregationBundle = findSidebarAggregationBundle();
   console.log(`-- patch-linux-runtime: ${path.relative(PROJECT_ROOT, sidebarAggregationBundle)}`);
   const originalSidebarAggregation = fs.readFileSync(sidebarAggregationBundle, "utf8");
-  const sidebarAggregationCode = patchRendererUngroupedSidebarFallback(originalSidebarAggregation);
+  const sidebarAggregationCode = patchRendererNativeSidebarChats(originalSidebarAggregation);
 
   if (sidebarAggregationCode !== originalSidebarAggregation) {
     fs.writeFileSync(sidebarAggregationBundle, sidebarAggregationCode, "utf8");
-    console.log("  [ok] Linux sidebar aggregation patches applied");
+    console.log("  [ok] Linux sidebar native split patches applied");
   } else {
     console.log("  [ok] No sidebar aggregation changes needed");
   }
