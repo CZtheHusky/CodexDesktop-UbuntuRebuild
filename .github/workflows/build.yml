@@ -31,7 +31,7 @@ jobs:
           npm ci
       - run: |
           brew install --quiet sevenzip
-      - run: node scripts/sync-upstream.js --force --skip-win
+      - run: node scripts/sync-upstream.js --force --platform mac-${{ matrix.arch }} --skip-win
       - run: node scripts/patch-all.js mac-${{ matrix.arch }}
       - run: npm run build:mac-${{ matrix.arch }}
       - uses: actions/upload-artifact@v7
@@ -82,7 +82,7 @@ jobs:
       - run: |
           sudo apt-get update
           sudo apt-get install -y rpm fakeroot dpkg 7zip
-      - run: node scripts/sync-upstream.js --force --skip-win
+      - run: node scripts/sync-upstream.js --force --platform linux-${{ matrix.arch }} --skip-win
       - run: node scripts/patch-all.js mac-${{ matrix.arch }}
       - run: npm run build:linux-${{ matrix.arch }}
       - uses: actions/upload-artifact@v7

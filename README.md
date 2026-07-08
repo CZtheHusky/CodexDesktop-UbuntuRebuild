@@ -57,12 +57,20 @@ Install project dependencies:
 npm ci
 ```
 
-Fetch upstream Codex app resources if `src/mac-x64/_asar` or
-`src/mac-arm64/_asar` is missing. The `src/` directory is generated and ignored
-by git, so a fresh clone normally needs this step:
+Fetch upstream Codex app resources for the architecture you are going to build.
+The `src/` directory is generated and ignored by git, so a fresh clone normally
+needs this step.
+
+For the default Ubuntu x64 build:
 
 ```bash
-npm run sync -- --skip-win
+npm run sync -- --platform linux-x64 --skip-win
+```
+
+For Ubuntu arm64:
+
+```bash
+npm run sync -- --platform linux-arm64 --skip-win
 ```
 
 Build the Ubuntu x64 package:
@@ -152,8 +160,10 @@ macOS-only Mach-O files.
 If the build fails with `Source not found` or `_asar/ not found`, run:
 
 ```bash
-npm run sync -- --skip-win
+npm run sync -- --platform linux-x64 --skip-win
 ```
+
+Use `--platform linux-arm64` instead when building on Ubuntu arm64.
 
 If archive extraction fails, confirm `p7zip-full` is installed and that `7zz` or
 `7z` is available on `PATH`.

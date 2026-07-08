@@ -13,7 +13,10 @@
  *     ...                 All other upstream resources
  *
  * Usage:
- *   node scripts/sync-upstream.js [--force] [--skip-mac] [--skip-win]
+ *   node scripts/sync-upstream.js [--force] [--skip-mac] [--skip-win] [--platform <target>]
+ *
+ * Targets:
+ *   mac-arm64, mac-x64, linux-arm64, linux-x64, win, win-x64
  */
 
 const https = require("https");
@@ -46,7 +49,58 @@ const CHECK_ONLY = args.includes("--check-only");
 const SKIP_MAC = args.includes("--skip-mac");
 const SKIP_WIN = args.includes("--skip-win");
 
+const PLATFORM_TARGETS = {
+  "mac-arm64": ["mac-arm64"],
+  "mac-x64": ["mac-x64"],
+  "linux-arm64": ["mac-arm64"],
+  "linux-x64": ["mac-x64"],
+  win: ["win"],
+  "win-x64": ["win"],
+};
+
 // ─── Helpers ────────────────────────────────────────────────────
+
+function argValue(name) {
+  const eq = args.find((a) => a.startsWith(`${name}=`));
+  if (eq) {
+    const value = eq.slice(name.length + 1);
+    if (!value) throw new Error(`${name} requires a value`);
+    return value;
+  }
+
+  const idx = args.indexOf(name);
+  if (idx === -1) return "";
+
+  const value = args[idx + 1] || "";
+  if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
+  return value;
+}
+
+function selectedTargets() {
+  const requestedPlatform = argValue("--platform");
+  if (requestedPlatform && !PLATFORM_TARGETS[requestedPlatform]) {
+    const valid = Object.keys(PLATFORM_TARGETS).join(", ");
+    throw new Error(`Unsupported --platform "${requestedPlatform}". Expected one of: ${valid}`);
+  }
+
+  const targets = new Set(
+    requestedPlatform
+      ? PLATFORM_TARGETS[requestedPlatform]
+      : ["mac-arm64", "mac-x64", "win"],
+  );
+
+  if (SKIP_MAC) {
+    targets.delete("mac-arm64");
+    targets.delete("mac-x64");
+  }
+  if (SKIP_WIN) targets.delete("win");
+
+  if (targets.size === 0) {
+    throw new Error("No upstream platforms selected after applying --platform/--skip-* options");
+  }
+
+  return targets;
+}
 
 function httpGet(url) {
   const mod = url.startsWith("https") ? https : http;
@@ -268,24 +322,27 @@ async function main() {
   console.log("== Codex upstream sync ==\n");
   fs.mkdirSync(TEMP_DIR, { recursive: true });
 
+  const targets = selectedTargets();
   const results = {};
 
   // Detect versions
-  if (!SKIP_MAC) {
+  if (targets.has("mac-arm64")) {
     try {
       const arm64Info = await getAppcastVersion(APPCAST_ARM64);
       console.log(`\n   mac-arm64: ${arm64Info.version} (build ${arm64Info.build})`);
       results["mac-arm64"] = arm64Info;
     } catch (e) { console.error(`   [x] mac-arm64 check: ${e.message}`); }
+  }
 
+  if (targets.has("mac-x64")) {
     try {
       const x64Info = await getAppcastVersion(APPCAST_X64);
-      console.log(`   mac-x64:   ${x64Info.version} (build ${x64Info.build})`);
+      console.log(`${targets.has("mac-arm64") ? "" : "\n"}   mac-x64:   ${x64Info.version} (build ${x64Info.build})`);
       results["mac-x64"] = x64Info;
     } catch (e) { console.error(`   [x] mac-x64 check: ${e.message}`); }
   }
 
-  if (!SKIP_WIN) {
+  if (targets.has("win")) {
     try {
       const winInfo = await getWindowsVersion();
       console.log(`   win:       ${winInfo.version}`);
@@ -299,17 +356,17 @@ async function main() {
   }
 
   // Download and extract
-  if (!SKIP_MAC && results["mac-arm64"]) {
+  if (targets.has("mac-arm64") && results["mac-arm64"]) {
     try {
       results["mac-arm64"] = await syncMac("arm64", APPCAST_ARM64, path.join(SRC_DIR, "mac-arm64"));
     } catch (e) { console.error(`   [x] mac-arm64: ${e.message}`); }
   }
-  if (!SKIP_MAC && results["mac-x64"]) {
+  if (targets.has("mac-x64") && results["mac-x64"]) {
     try {
       results["mac-x64"] = await syncMac("x64", APPCAST_X64, path.join(SRC_DIR, "mac-x64"));
     } catch (e) { console.error(`   [x] mac-x64: ${e.message}`); }
   }
-  if (!SKIP_WIN && results.win) {
+  if (targets.has("win") && results.win) {
     try {
       results.win = await syncWin(path.join(SRC_DIR, "win"));
     } catch (e) { console.error(`   [x] win: ${e.message}`); }
