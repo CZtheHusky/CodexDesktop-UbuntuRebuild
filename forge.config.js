@@ -2,6 +2,23 @@ const { FuseV1Options, FuseVersion } = require("@electron/fuses");
 const path = require("path");
 const fs = require("fs");
 
+const linuxDesktopTemplate = path.join(__dirname, "resources", "linux-desktop.ejs");
+
+function isMachO(filePath) {
+  try {
+    const fd = fs.openSync(filePath, "r");
+    try {
+      const buffer = Buffer.alloc(4);
+      if (fs.readSync(fd, buffer, 0, 4, 0) < 4) return false;
+      return ["feedface", "feedfacf", "cefaedfe", "cffaedfe", "cafebabe", "bebafeca"].includes(buffer.toString("hex"));
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
 module.exports = {
   packagerConfig: {
     name: "Codex",
@@ -70,11 +87,11 @@ module.exports = {
     { name: "@electron-forge/maker-zip", platforms: ["win32"] },
     {
       name: "@electron-forge/maker-deb",
-      config: { options: { name: "codex", productName: "Codex", genericName: "AI Coding Assistant", categories: ["Development", "Utility"], bin: "Codex", maintainer: "Cometix Space", homepage: "https://github.com/Haleclipse/CodexDesktop-Rebuild", icon: "./resources/electron.png" } },
+      config: { options: { name: "codex-desktop", productName: "Codex Desktop", genericName: "AI Coding Assistant", categories: ["Development", "Utility"], bin: "Codex", maintainer: "Cometix Space", homepage: "https://github.com/Haleclipse/CodexDesktop-Rebuild", icon: "./resources/electron.png", desktopTemplate: linuxDesktopTemplate } },
     },
     {
       name: "@electron-forge/maker-rpm",
-      config: { options: { name: "codex", productName: "Codex", genericName: "AI Coding Assistant", categories: ["Development", "Utility"], bin: "Codex", license: "Apache-2.0", homepage: "https://github.com/Haleclipse/CodexDesktop-Rebuild", icon: "./resources/electron.png" } },
+      config: { options: { name: "codex-desktop", productName: "Codex Desktop", genericName: "AI Coding Assistant", categories: ["Development", "Utility"], bin: "Codex", license: "Apache-2.0", homepage: "https://github.com/Haleclipse/CodexDesktop-Rebuild", icon: "./resources/electron.png", desktopTemplate: linuxDesktopTemplate } },
     },
     { name: "@electron-forge/maker-zip", platforms: ["linux"] },
   ],
@@ -123,7 +140,7 @@ module.exports = {
         "codexTemplate.png", "codexTemplate@2x.png",
         "app.asar", "codex-notification.wav",
       ]);
-      const MACOS_ONLY_DIRS = new Set(["native", "app.asar.unpacked"]);
+      const MACOS_ONLY_DIRS = new Set(["native", "app.asar.unpacked", "cua_node"]);
       if (isLinux) {
         for (const f of MACOS_ONLY_FILES) skip.add(f);
         for (const d of MACOS_ONLY_DIRS) skip.add(d);
@@ -135,7 +152,7 @@ module.exports = {
         for (const e of fs.readdirSync(s, { withFileTypes: true })) {
           const sp = path.join(s, e.name), dp = path.join(d, e.name);
           if (e.isDirectory()) copyDir(sp, dp);
-          else if (!e.isSymbolicLink()) { fs.copyFileSync(sp, dp); copied++; }
+          else if (!e.isSymbolicLink() && !(isLinux && isMachO(sp))) { fs.copyFileSync(sp, dp); copied++; }
         }
       };
 
@@ -148,7 +165,7 @@ module.exports = {
 
         if (entry.isDirectory()) {
           copyDir(srcPath, destPath);
-        } else if (!entry.isSymbolicLink()) {
+        } else if (!entry.isSymbolicLink() && !(isLinux && isMachO(srcPath))) {
           fs.copyFileSync(srcPath, destPath);
           try { fs.chmodSync(destPath, 0o755); } catch {}
           copied++;

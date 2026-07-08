@@ -34,7 +34,7 @@ const MACOS_STRIP = new Set([
   "electron.icns", "Assets.car",
   "codexTemplate.png", "codexTemplate@2x.png",
 ]);
-const MACOS_STRIP_DIRS = new Set(["native"]);
+const MACOS_STRIP_DIRS = new Set(["native", "app.asar.unpacked", "cua_node"]);
 
 function copyRecursive(src, dest, skipFiles, skipDirs) {
   fs.mkdirSync(dest, { recursive: true });
@@ -160,12 +160,17 @@ function main() {
   console.log(`-- prepare-src: ${platform}`);
   console.log(`   source: ${path.relative(PROJECT_ROOT, sourceDir)}/`);
 
-  // 1. Repack _asar/ -> app.asar
-  const repackedAsar = path.join(sourceDir, "app.asar");
-  console.log("   [repack] _asar/ -> app.asar");
-  execSync(`npx asar pack "${asarContentDir}" "${repackedAsar}"`);
-  const asarSize = (fs.statSync(repackedAsar).size / 1048576).toFixed(1);
-  console.log(`   [ok] app.asar: ${asarSize} MB`);
+  // 1. Repack _asar/ -> app.asar for upstream-asar targets.
+  // Linux is packed by Forge from flat src/, so this step is unnecessary there.
+  if (!isLinux) {
+    const repackedAsar = path.join(sourceDir, "app.asar");
+    console.log("   [repack] _asar/ -> app.asar");
+    execSync(`npx asar pack "${asarContentDir}" "${repackedAsar}"`);
+    const asarSize = (fs.statSync(repackedAsar).size / 1048576).toFixed(1);
+    console.log(`   [ok] app.asar: ${asarSize} MB`);
+  } else {
+    console.log("   [linux] skip upstream app.asar repack; forge packs flat src/");
+  }
 
   // 2. Replace codex binary with @cometix/codex
   const isWin = platform === "win";
@@ -208,7 +213,7 @@ function main() {
       const p = path.join(SRC, f);
       if (fs.statSync(p).isFile()) fs.unlinkSync(p);
     }
-    const skipDirs = new Set(["node_modules"]);
+    const skipDirs = new Set(["node_modules", ...MACOS_STRIP_DIRS]);
     const count = copyRecursive(asarContentDir, SRC, null, skipDirs);
     console.log(`   [linux] _asar/ -> src/ (${count} files, skipped node_modules/)`);
   }

@@ -27,12 +27,36 @@ const SRC_MODULES = path.join(SRC, "node_modules");
 
 const MACOS_ONLY = new Set(["objc-js"]);
 
-function copyRecursive(src, dest) {
+function shouldSkipForPlatform(filePath, options) {
+  const platform = options.platform;
+  if (!platform?.startsWith("linux") || !options.sourceRoot) return false;
+
+  const rel = path.relative(options.sourceRoot, filePath).split(path.sep).join("/");
+  const parts = rel.split("/");
+  const prebuildsIndex = parts.indexOf("prebuilds");
+  if (prebuildsIndex < 0 || parts.length <= prebuildsIndex + 1) return false;
+
+  const prebuildName = parts[prebuildsIndex + 1].toLowerCase();
+  if (prebuildName.includes("darwin") || prebuildName.includes("win32") || prebuildName.includes("windows")) {
+    return true;
+  }
+  if (platform === "linux-x64" && (prebuildName.includes("linux-arm64") || prebuildName.includes("linux-aarch64"))) {
+    return true;
+  }
+  if (platform === "linux-arm64" && (prebuildName.includes("linux-x64") || prebuildName.includes("linux-x86"))) {
+    return true;
+  }
+
+  return false;
+}
+
+function copyRecursive(src, dest, options = {}) {
   fs.mkdirSync(dest, { recursive: true });
   let count = 0;
   for (const e of fs.readdirSync(src, { withFileTypes: true })) {
     const s = path.join(src, e.name), d = path.join(dest, e.name);
-    if (e.isDirectory()) { count += copyRecursive(s, d); }
+    if (shouldSkipForPlatform(s, options)) continue;
+    if (e.isDirectory()) { count += copyRecursive(s, d, options); }
     else if (e.isSymbolicLink()) { /* skip */ }
     else { fs.copyFileSync(s, d); count++; }
   }
@@ -109,7 +133,7 @@ function main() {
     }
 
     const destDir = path.join(SRC_MODULES, mod);
-    const count = copyRecursive(source, destDir);
+    const count = copyRecursive(source, destDir, { platform, sourceRoot: source });
     totalCopied += count;
     console.log(`   [${sourceLabel}] ${mod} (${count} files)`);
   }
