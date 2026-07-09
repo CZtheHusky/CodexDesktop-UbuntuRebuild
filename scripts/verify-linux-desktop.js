@@ -93,6 +93,29 @@ function findMainBundle() {
   fail("Could not locate Linux main bundle");
 }
 
+function findOpenInWorkerBundle() {
+  const buildDir = path.join(SRC, ".vite", "build");
+  assert(fs.existsSync(buildDir), `Missing Linux build dir: ${rel(buildDir)}`);
+
+  const candidates = fs
+    .readdirSync(buildDir)
+    .filter((name) => /^worker(?:-[\w-]+)?\.js$/.test(name))
+    .map((name) => path.join(buildDir, name));
+
+  for (const file of candidates) {
+    const code = fs.readFileSync(file, "utf8");
+    if (
+      code.includes("get-target-command") &&
+      code.includes("Unknown open target") &&
+      code.includes("id:`fileManager`")
+    ) {
+      return { file, code };
+    }
+  }
+
+  fail("Could not locate Linux open-in worker bundle");
+}
+
 function findWebviewAppBundle() {
   const assetsDir = path.join(SRC, "webview", "assets");
   assert(fs.existsSync(assetsDir), `Missing Linux webview assets dir: ${rel(assetsDir)}`);
@@ -268,6 +291,17 @@ function verifyPrepared() {
     !code.includes("if(process.platform!==`win32`&&process.platform!==`linux`||t!==`primary`)return;"),
     "Linux titlebar overlay install branch is still present"
   );
+  assert(
+    code.includes("__codexDesktopLinuxOpenFileManager") &&
+      code.includes("__codexDesktopLinuxFileManagerCommand") &&
+      code.includes("detect:__codexDesktopLinuxFileManagerCommand,args:e=>cs(e),open:async({command:e,path:t})=>__codexDesktopLinuxOpenFileManager(t,e)"),
+    "Robust Linux file manager open target patch is missing from main bundle"
+  );
+  const openInWorker = findOpenInWorkerBundle();
+  assert(
+    openInWorker.code.includes("detect:()=>K7(`xdg-open`)??K7(`gio`)??`system-default`,args:e=>q7(e),open:async({path:e})=>mce(e)"),
+    "Robust Linux file manager open target patch is missing from open-in worker bundle"
+  );
   const webview = findWebviewAppBundle();
   assert(webview.code.includes("r===!1||a==null?null"), "Renderer local thread catalog bridge patch is missing");
   const appShell = findWebviewAppShellBundle();
@@ -285,10 +319,18 @@ function verifyPrepared() {
     threadStore.code.includes("__codexDesktopLinuxSidebarThreadSummaries"),
     "Renderer sidebar thread summaries patch is missing"
   );
+  assert(
+    threadStore.code.includes("__codexDesktopLinuxSummaryTitleFallback"),
+    "Renderer thread summary title fallback patch is missing"
+  );
   const sidebarProjectGroups = findSidebarProjectGroupsBundle();
   assert(
     sidebarProjectGroups.code.includes("__codexDesktopLinuxThreadCwdWorkspaceRoots"),
     "Renderer Linux thread cwd workspace roots patch is missing"
+  );
+  assert(
+    sidebarProjectGroups.code.includes("?[t.cwd]:[]") && !sidebarProjectGroups.code.includes("?[k(t.cwd)]:[]"),
+    "Renderer Linux thread cwd workspace roots must preserve path casing"
   );
   const sidebarAggregation = findSidebarAggregationBundle();
   assert(
@@ -407,6 +449,18 @@ function verifyPackage(platform) {
       !appAsarContent.includes(Buffer.from("if(process.platform!==`win32`&&process.platform!==`linux`||t!==`primary`)return;")),
       "Packaged app.asar still contains Linux titlebar overlay install branch"
     );
+    assert(
+      appAsarContent.includes(Buffer.from("__codexDesktopLinuxOpenFileManager")) &&
+        appAsarContent.includes(Buffer.from("__codexDesktopLinuxFileManagerCommand")) &&
+        appAsarContent.includes(
+          Buffer.from("detect:__codexDesktopLinuxFileManagerCommand,args:e=>cs(e),open:async({command:e,path:t})=>__codexDesktopLinuxOpenFileManager(t,e)")
+        ),
+      "Packaged app.asar is missing robust Linux file manager open target patch in main bundle"
+    );
+    assert(
+      appAsarContent.includes(Buffer.from("detect:()=>K7(`xdg-open`)??K7(`gio`)??`system-default`,args:e=>q7(e),open:async({path:e})=>mce(e)")),
+      "Packaged app.asar is missing robust Linux file manager open target patch in open-in worker bundle"
+    );
     assert(appAsarContent.includes(Buffer.from("r===!1||a==null?null")), "Packaged app.asar is missing renderer local thread catalog bridge patch");
     assert(
       !appAsarContent.includes(Buffer.from("data-codex-linux-window-controls")),
@@ -421,8 +475,16 @@ function verifyPackage(platform) {
       "Packaged app.asar is missing renderer sidebar thread summaries patch"
     );
     assert(
+      appAsarContent.includes(Buffer.from("__codexDesktopLinuxSummaryTitleFallback")),
+      "Packaged app.asar is missing renderer thread summary title fallback patch"
+    );
+    assert(
       appAsarContent.includes(Buffer.from("__codexDesktopLinuxThreadCwdWorkspaceRoots")),
       "Packaged app.asar is missing renderer Linux thread cwd workspace roots patch"
+    );
+    assert(
+      appAsarContent.includes(Buffer.from("?[t.cwd]:[]")) && !appAsarContent.includes(Buffer.from("?[k(t.cwd)]:[]")),
+      "Packaged app.asar Linux thread cwd workspace roots must preserve path casing"
     );
     assert(
       appAsarContent.includes(Buffer.from("let L=r?I:[],R=L.map(e=>e.task.key)")),

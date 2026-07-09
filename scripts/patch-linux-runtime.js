@@ -34,6 +34,28 @@ function findMainBundle() {
   fail("Could not locate Linux main bundle");
 }
 
+function findOpenInWorkerBundle() {
+  if (!fs.existsSync(BUILD_DIR)) fail(`Missing build dir: ${path.relative(PROJECT_ROOT, BUILD_DIR)}`);
+
+  const candidates = fs
+    .readdirSync(BUILD_DIR)
+    .filter((name) => /^worker(?:-[\w-]+)?\.js$/.test(name))
+    .map((name) => path.join(BUILD_DIR, name));
+
+  for (const file of candidates) {
+    const code = fs.readFileSync(file, "utf8");
+    if (
+      code.includes("get-target-command") &&
+      code.includes("Unknown open target") &&
+      code.includes("id:`fileManager`")
+    ) {
+      return file;
+    }
+  }
+
+  fail("Could not locate Linux open-in worker bundle");
+}
+
 function findWebviewAppBundle() {
   if (!fs.existsSync(WEBVIEW_ASSETS_DIR)) {
     fail(`Missing webview assets dir: ${path.relative(PROJECT_ROOT, WEBVIEW_ASSETS_DIR)}`);
@@ -265,6 +287,85 @@ function patchLinuxWindowBehavior(code) {
   return next;
 }
 
+function patchLinuxFileManagerOpenTarget(code) {
+  let next = code;
+
+  if (!next.includes("__codexDesktopLinuxOpenFileManager")) {
+    const helperNeedle =
+      "async function MM(e){let{shell:t}=await import(`electron`),n=NM(e);if(n&&(0,u.statSync)(n).isFile()){t.showItemInFolder(n);return}let r=n??e,i=await t.openPath(r);if(i)throw Error(i)}function NM(e){let t=e;for(;;){if((0,u.existsSync)(t))return t;let e=(0,s.dirname)(t);if(e===t)return null;t=e}}";
+    const helperReplacement =
+      "async function MM(e){let{shell:t}=await import(`electron`),n=NM(e);if(n&&(0,u.statSync)(n).isFile()){t.showItemInFolder(n);return}let r=n??e,i=await t.openPath(r);if(i)throw Error(i)}function NM(e){let t=e;for(;;){if((0,u.existsSync)(t))return t;let e=(0,s.dirname)(t);if(e===t)return null;t=e}}function __codexDesktopLinuxFileManagerCommand(){return os(`xdg-open`)??os(`gio`)??`system-default`}async function __codexDesktopLinuxOpenFileManager(e,t){let n=NM(e),r=n??e;if(n&&(0,u.statSync)(n).isFile())r=(0,s.dirname)(n);let i=[],a=[];t&&t!==`system-default`&&a.push(t);for(let e of[`xdg-open`,`gio`]){let t=os(e);t&&a.push(t)}for(let e of[...new Set(a)])try{await us(e,(0,s.basename)(e)===`gio`?[`open`,r]:[r]);return}catch(t){i.push(`${e}: ${t instanceof Error?t.message:String(t)}`)}let{shell:o}=await import(`electron`),c=await o.openPath(r);if(!c)return;i.push(`electron: ${c}`);throw Error(`Failed to open file manager for ${r}: ${i.join(`; `)}`)}";
+
+    if (next.includes(helperNeedle)) {
+      console.log("  [patch] Add robust Linux file manager opener");
+      next = replaceOnce(next, helperNeedle, helperReplacement, "linux file manager opener helper");
+    } else if (next.includes("function mce(e){let{shell:t}=await import(`electron`)")) {
+      console.log("  [ok] Linux file manager opener helper not needed in worker bundle");
+    } else {
+      fail("linux file manager opener helper: patch anchor not found");
+    }
+  } else {
+    console.log("  [ok] Robust Linux file manager opener already patched");
+  }
+
+  const variants = [
+    {
+      needle:
+        "AM=Zj({id:`fileManager`,label:`Finder`,icon:`apps/finder.png`,kind:`fileManager`,darwin:{detect:()=>`open`,args:e=>cs(e)},win32:{label:`File Explorer`,icon:`apps/file-explorer.png`,detect:jM,args:e=>cs(e),open:async({path:e})=>MM(e)}})",
+      replacement:
+        "AM=Zj({id:`fileManager`,label:`Finder`,icon:`apps/finder.png`,kind:`fileManager`,darwin:{detect:()=>`open`,args:e=>cs(e)},win32:{label:`File Explorer`,icon:`apps/file-explorer.png`,detect:jM,args:e=>cs(e),open:async({path:e})=>MM(e)},linux:{label:`File Manager`,icon:`apps/file-explorer.png`,detect:__codexDesktopLinuxFileManagerCommand,args:e=>cs(e),open:async({command:e,path:t})=>__codexDesktopLinuxOpenFileManager(t,e)}})",
+    },
+    {
+      needle:
+        "AM=Zj({id:`fileManager`,label:`Finder`,icon:`apps/finder.png`,kind:`fileManager`,darwin:{detect:()=>`open`,args:e=>cs(e)},win32:{label:`File Explorer`,icon:`apps/file-explorer.png`,detect:jM,args:e=>cs(e),open:async({path:e})=>MM(e)},linux:{label:`File Manager`,icon:`apps/file-explorer.png`,detect:()=>`system-default`,args:e=>cs(e),open:async({path:e})=>MM(e)}})",
+      replacement:
+        "AM=Zj({id:`fileManager`,label:`Finder`,icon:`apps/finder.png`,kind:`fileManager`,darwin:{detect:()=>`open`,args:e=>cs(e)},win32:{label:`File Explorer`,icon:`apps/file-explorer.png`,detect:jM,args:e=>cs(e),open:async({path:e})=>MM(e)},linux:{label:`File Manager`,icon:`apps/file-explorer.png`,detect:__codexDesktopLinuxFileManagerCommand,args:e=>cs(e),open:async({command:e,path:t})=>__codexDesktopLinuxOpenFileManager(t,e)}})",
+    },
+    {
+      needle:
+        "fce=S9({id:`fileManager`,label:`Finder`,icon:`apps/finder.png`,kind:`fileManager`,darwin:{detect:()=>`open`,args:e=>q7(e)},win32:{label:`File Explorer`,icon:`apps/file-explorer.png`,detect:pce,args:e=>q7(e),open:async({path:e})=>mce(e)}})",
+      replacement:
+        "fce=S9({id:`fileManager`,label:`Finder`,icon:`apps/finder.png`,kind:`fileManager`,darwin:{detect:()=>`open`,args:e=>q7(e)},win32:{label:`File Explorer`,icon:`apps/file-explorer.png`,detect:pce,args:e=>q7(e),open:async({path:e})=>mce(e)},linux:{label:`File Manager`,icon:`apps/file-explorer.png`,detect:()=>K7(`xdg-open`)??K7(`gio`)??`system-default`,args:e=>q7(e),open:async({path:e})=>mce(e)}})",
+    },
+    {
+      needle:
+        "fce=S9({id:`fileManager`,label:`Finder`,icon:`apps/finder.png`,kind:`fileManager`,darwin:{detect:()=>`open`,args:e=>q7(e)},win32:{label:`File Explorer`,icon:`apps/file-explorer.png`,detect:pce,args:e=>q7(e),open:async({path:e})=>mce(e)},linux:{label:`File Manager`,icon:`apps/file-explorer.png`,detect:()=>`system-default`,args:e=>q7(e),open:async({path:e})=>mce(e)}})",
+      replacement:
+        "fce=S9({id:`fileManager`,label:`Finder`,icon:`apps/finder.png`,kind:`fileManager`,darwin:{detect:()=>`open`,args:e=>q7(e)},win32:{label:`File Explorer`,icon:`apps/file-explorer.png`,detect:pce,args:e=>q7(e),open:async({path:e})=>mce(e)},linux:{label:`File Manager`,icon:`apps/file-explorer.png`,detect:()=>K7(`xdg-open`)??K7(`gio`)??`system-default`,args:e=>q7(e),open:async({path:e})=>mce(e)}})",
+    },
+  ];
+
+  for (const { replacement } of variants) {
+    if (next.includes(replacement)) {
+      console.log("  [ok] Linux file manager open target already patched");
+      return next;
+    }
+  }
+
+  for (const { needle, replacement } of variants) {
+    if (next.includes(needle)) {
+      console.log("  [patch] Add Linux file manager open target");
+      return replaceOnce(next, needle, replacement, "linux file manager open target");
+    }
+  }
+
+  fail("linux file manager open target: patch anchor not found");
+}
+
+function patchRendererThreadSummaryTitleFallback(code) {
+  if (code.includes("__codexDesktopLinuxSummaryTitleFallback")) {
+    console.log("  [ok] Renderer thread summary title fallback already patched");
+    return code;
+  }
+
+  const needle = "title:e.name?.trim()||null,cwd:e.cwd||null,";
+  const replacement =
+    "title:globalThis.__codexDesktopLinuxSummaryTitleFallback!==!1?e.name?.trim()||e.preview?.replace(/\\s+/g,` `).trim()||null:e.name?.trim()||null,cwd:e.cwd||null,";
+
+  console.log("  [patch] Use thread preview as sidebar summary title fallback");
+  return replaceOnce(code, needle, replacement, "renderer thread summary title fallback");
+}
+
 function patchRendererCatalogBridge(code) {
   if (code.includes("r===!1||a==null?null")) {
     console.log("  [ok] Renderer local thread catalog bridge already patched");
@@ -310,6 +411,15 @@ function patchRendererSidebarThreadSummaries(code) {
 
 function patchRendererProjectGroupsFromThreadCwds(code) {
   if (code.includes("__codexDesktopLinuxThreadCwdWorkspaceRoots")) {
+    if (code.includes("?[k(t.cwd)]:[]")) {
+      console.log("  [patch] Preserve Linux thread cwd casing in project roots");
+      return replaceOnce(
+        code,
+        "?[k(t.cwd)]:[]",
+        "?[t.cwd]:[]",
+        "renderer Linux thread cwd project root casing"
+      );
+    }
     console.log("  [ok] Renderer Linux thread cwd workspace roots already patched");
     return code;
   }
@@ -317,7 +427,7 @@ function patchRendererProjectGroupsFromThreadCwds(code) {
   const needle =
     "b=Object.fromEntries(g.map(({hostId:e})=>{let t=new Map((h[e]??$).map(e=>[k(e.dir),e]));return y[e]?.forEach(e=>{t.set(k(e.dir),e)}),[e,Array.from(t.values())]})),x=Vr([...Gr(n.data,h[o]??$,t(F,void 0).data?.codexHome),...Kr(M(t,l.LOCAL_PROJECTS)),...Jr(c,t(K))],M(t,l.PROJECT_ORDER)),";
   const replacement =
-    "b=Object.fromEntries(g.map(({hostId:e})=>{let t=new Map((h[e]??$).map(e=>[k(e.dir),e]));return y[e]?.forEach(e=>{t.set(k(e.dir),e)}),[e,Array.from(t.values())]})),linuxWorkspaceRootData=globalThis.__codexDesktopLinuxThreadCwdWorkspaceRoots!==!1?{...n.data,roots:[...new Set([...(n.data?.roots??[]),...s.flatMap(t=>t.kind===`local`&&(t.hostId==null||t.hostId===`local`)&&t.cwd&&t.cwd!==`~`&&t.workspaceKind!==`projectless`&&!(Array.isArray(e.projectlessThreadIds)&&e.projectlessThreadIds.includes(t.conversationId))?[k(t.cwd)]:[])])]}:n.data,x=Vr([...Gr(linuxWorkspaceRootData,h[o]??$,t(F,void 0).data?.codexHome),...Kr(M(t,l.LOCAL_PROJECTS)),...Jr(c,t(K))],M(t,l.PROJECT_ORDER)),";
+    "b=Object.fromEntries(g.map(({hostId:e})=>{let t=new Map((h[e]??$).map(e=>[k(e.dir),e]));return y[e]?.forEach(e=>{t.set(k(e.dir),e)}),[e,Array.from(t.values())]})),linuxWorkspaceRootData=globalThis.__codexDesktopLinuxThreadCwdWorkspaceRoots!==!1?{...n.data,roots:[...new Set([...(n.data?.roots??[]),...s.flatMap(t=>t.kind===`local`&&(t.hostId==null||t.hostId===`local`)&&t.cwd&&t.cwd!==`~`&&t.workspaceKind!==`projectless`&&!(Array.isArray(e.projectlessThreadIds)&&e.projectlessThreadIds.includes(t.conversationId))?[t.cwd]:[])])]}:n.data,x=Vr([...Gr(linuxWorkspaceRootData,h[o]??$,t(F,void 0).data?.codexHome),...Kr(M(t,l.LOCAL_PROJECTS)),...Jr(c,t(K))],M(t,l.PROJECT_ORDER)),";
 
   console.log("  [patch] Feed Linux local thread cwd roots into project grouping");
   return replaceOnce(code, needle, replacement, "renderer Linux thread cwd workspace roots");
@@ -350,12 +460,25 @@ function main() {
   let code = patchLinuxFeatureGate(original);
   code = patchThreadCatalogStartupSync(code);
   code = patchLinuxWindowBehavior(code);
+  code = patchLinuxFileManagerOpenTarget(code);
 
   if (code !== original) {
     fs.writeFileSync(bundle, code, "utf8");
     console.log("  [ok] Linux runtime patches applied");
   } else {
     console.log("  [ok] No changes needed");
+  }
+
+  const workerBundle = findOpenInWorkerBundle();
+  console.log(`-- patch-linux-runtime: ${path.relative(PROJECT_ROOT, workerBundle)}`);
+  const originalWorker = fs.readFileSync(workerBundle, "utf8");
+  const workerCode = patchLinuxFileManagerOpenTarget(originalWorker);
+
+  if (workerCode !== originalWorker) {
+    fs.writeFileSync(workerBundle, workerCode, "utf8");
+    console.log("  [ok] Linux open-in worker patches applied");
+  } else {
+    console.log("  [ok] No open-in worker changes needed");
   }
 
   const webviewBundle = findWebviewAppBundle();
@@ -385,7 +508,8 @@ function main() {
   const threadStoreBundle = findThreadStoreBundle();
   console.log(`-- patch-linux-runtime: ${path.relative(PROJECT_ROOT, threadStoreBundle)}`);
   const originalThreadStore = fs.readFileSync(threadStoreBundle, "utf8");
-  const threadStoreCode = patchRendererSidebarThreadSummaries(originalThreadStore);
+  let threadStoreCode = patchRendererSidebarThreadSummaries(originalThreadStore);
+  threadStoreCode = patchRendererThreadSummaryTitleFallback(threadStoreCode);
 
   if (threadStoreCode !== originalThreadStore) {
     fs.writeFileSync(threadStoreBundle, threadStoreCode, "utf8");
