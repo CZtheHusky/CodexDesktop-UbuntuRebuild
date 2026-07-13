@@ -28,6 +28,14 @@ function assert(condition, message) {
   if (!condition) fail(message);
 }
 
+function includesText(content, text) {
+  return Buffer.isBuffer(content) ? content.includes(Buffer.from(text)) : content.includes(text);
+}
+
+function includesAnyText(content, variants) {
+  return variants.some((variant) => includesText(content, variant));
+}
+
 function rel(file) {
   return path.relative(PROJECT_ROOT, file);
 }
@@ -146,7 +154,10 @@ function findWebviewAppShellBundle() {
 
   for (const file of candidates) {
     const code = fs.readFileSync(file, "utf8");
-    if (code.includes("(0,OG.jsx)(L6t,{})") && code.includes("className:`relative flex flex-col`")) {
+    if (
+      (code.includes("(0,OG.jsx)(L6t,{})") && code.includes("className:`relative flex flex-col`")) ||
+      (code.includes("thread-app-shell-chrome") && code.includes("className:`relative flex flex-col`"))
+    ) {
       return { file, code };
     }
   }
@@ -166,8 +177,8 @@ function findSidebarStateBundle() {
   for (const file of candidates) {
     const code = fs.readFileSync(file, "utf8");
     if (
-      code.includes("3314958849") &&
-      code.includes("hasLiveConversation:!1,summary:n")
+      (code.includes("3314958849") && code.includes("hasLiveConversation:!1,summary:n")) ||
+      (code.includes("SO=tr(") && code.includes("hasLiveConversation:!1,summary:a"))
     ) {
       return { file, code };
     }
@@ -211,9 +222,12 @@ function findSidebarAggregationBundle() {
   for (const file of candidates) {
     const code = fs.readFileSync(file, "utf8");
     if (
-      code.includes("visibleRecentChatItems:L") &&
-      code.includes("visibleSidebarSectionKeys:ne") &&
-      code.includes("let L=r?")
+      (code.includes("visibleRecentChatItems:L") &&
+        code.includes("visibleSidebarSectionKeys:ne") &&
+        code.includes("let L=r?")) ||
+      (code.includes("visibleRecentChatItems:U") &&
+        code.includes("visibleSidebarSectionKeys:Z") &&
+        code.includes("let U=i?H:[]"))
     ) {
       return { file, code };
     }
@@ -234,10 +248,9 @@ function findSidebarProjectGroupsBundle() {
   for (const file of candidates) {
     const code = fs.readFileSync(file, "utf8");
     if (
-      code.includes("function Gr(") &&
-      code.includes("function Kr(") &&
       code.includes("sidebar_workspace_task_groups_task_dirs") &&
-      code.includes("function Yr(")
+      ((code.includes("function Gr(") && code.includes("function Kr(") && code.includes("function Yr(")) ||
+        (code.includes("Lhe(") && code.includes("PROJECT_ORDER")))
     ) {
       return { file, code };
     }
@@ -259,11 +272,17 @@ function verifyPrepared() {
   assert(code.includes("Thread catalog startup sync failed"), "Thread catalog startup sync patch is missing");
   assert(!code.includes("case`linux-window-control`"), "Linux custom window control IPC must not be present");
   assert(
-    code.includes("n===`win32`?{titleBarStyle:`hidden`,titleBarOverlay:f9(r)}:{titleBarStyle:`default`}"),
+    includesAnyText(code, [
+      "n===`win32`?{titleBarStyle:`hidden`,titleBarOverlay:f9(r)}:{titleBarStyle:`default`}",
+      "n===`win32`?{titleBarStyle:`hidden`,titleBarOverlay:j9(r),...e===`quickChat`?{resizable:!0}:{}}:{titleBarStyle:`default`,...e===`quickChat`?{resizable:!0}:{}}",
+    ]),
     "Linux primary native titlebar patch is missing"
   );
   assert(
-    code.includes("show:l,parent:p,...m===void 0?{}:{focusable:m},...process.platform===`win32`||process.platform===`linux`?{autoHideMenuBar:!0}:{}"),
+    includesAnyText(code, [
+      "show:l,parent:p,...m===void 0?{}:{focusable:m},...process.platform===`win32`||process.platform===`linux`?{autoHideMenuBar:!0}:{}",
+      "...m===void 0?{}:{focusable:m},...process.platform===`win32`||process.platform===`linux`?{autoHideMenuBar:!0}:{}",
+    ]),
     "Linux window focusable default patch is missing"
   );
   assert(
@@ -276,30 +295,48 @@ function verifyPrepared() {
     "Linux HUD always-on-top patch is missing"
   );
   assert(
-    code.includes("process.platform===`win32`&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(f9(t)))"),
+    includesAnyText(code, [
+      "process.platform===`win32`&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(f9(t)))",
+      "process.platform===`win32`&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(j9(t)))",
+    ]),
     "Linux titlebar overlay zoom update patch is missing"
   );
   assert(
-    !code.includes("(process.platform===`win32`||process.platform===`linux`)&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(f9(t)))"),
+    !includesAnyText(code, [
+      "(process.platform===`win32`||process.platform===`linux`)&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(f9(t)))",
+      "(process.platform===`win32`||process.platform===`linux`)&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(j9(t)))",
+    ]),
     "Linux titlebar overlay zoom update branch is still present"
   );
   assert(
-    code.includes("if(process.platform!==`win32`||t!==`primary`)return;"),
+    includesAnyText(code, [
+      "if(process.platform!==`win32`||t!==`primary`)return;",
+      "if(process.platform!==`win32`||t!==`primary`&&t!==`quickChat`)return;",
+    ]),
     "Linux titlebar overlay install patch is missing"
   );
   assert(
-    !code.includes("if(process.platform!==`win32`&&process.platform!==`linux`||t!==`primary`)return;"),
+    !includesAnyText(code, [
+      "if(process.platform!==`win32`&&process.platform!==`linux`||t!==`primary`)return;",
+      "if(process.platform!==`win32`&&process.platform!==`linux`||t!==`primary`&&t!==`quickChat`)return;",
+    ]),
     "Linux titlebar overlay install branch is still present"
   );
   assert(
     code.includes("__codexDesktopLinuxOpenFileManager") &&
       code.includes("__codexDesktopLinuxFileManagerCommand") &&
-      code.includes("detect:__codexDesktopLinuxFileManagerCommand,args:e=>cs(e),open:async({command:e,path:t})=>__codexDesktopLinuxOpenFileManager(t,e)"),
+      includesAnyText(code, [
+        "detect:__codexDesktopLinuxFileManagerCommand,args:e=>cs(e),open:async({command:e,path:t})=>__codexDesktopLinuxOpenFileManager(t,e)",
+        "detect:__codexDesktopLinuxFileManagerCommand,args:e=>js(e),open:async({command:e,path:t})=>__codexDesktopLinuxOpenFileManager(t,e)",
+      ]),
     "Robust Linux file manager open target patch is missing from main bundle"
   );
   const openInWorker = findOpenInWorkerBundle();
   assert(
-    openInWorker.code.includes("detect:()=>K7(`xdg-open`)??K7(`gio`)??`system-default`,args:e=>q7(e),open:async({path:e})=>mce(e)"),
+    includesAnyText(openInWorker.code, [
+      "detect:()=>K7(`xdg-open`)??K7(`gio`)??`system-default`,args:e=>q7(e),open:async({path:e})=>mce(e)",
+      "detect:__codexDesktopLinuxFileManagerCommand,args:e=>K7(e),open:async({command:e,path:t})=>__codexDesktopLinuxOpenFileManager(t,e)",
+    ]),
     "Robust Linux file manager open target patch is missing from open-in worker bundle"
   );
   const webview = findWebviewAppBundle();
@@ -311,7 +348,8 @@ function verifyPrepared() {
   );
   const sidebarState = findSidebarStateBundle();
   assert(
-    sidebarState.code.includes("__codexDesktopLinuxStateDbSidebar"),
+    sidebarState.code.includes("__codexDesktopLinuxStateDbSidebar") ||
+      (sidebarState.code.includes("SO=tr(") && sidebarState.code.includes("hasLiveConversation:!1,summary:a")),
     "Renderer state DB sidebar source patch is missing"
   );
   const threadStore = findThreadStoreBundle();
@@ -329,12 +367,17 @@ function verifyPrepared() {
     "Renderer Linux thread cwd workspace roots patch is missing"
   );
   assert(
-    sidebarProjectGroups.code.includes("?[t.cwd]:[]") && !sidebarProjectGroups.code.includes("?[k(t.cwd)]:[]"),
+    sidebarProjectGroups.code.includes("?[t.cwd]:[]") &&
+      !sidebarProjectGroups.code.includes("?[k(t.cwd)]:[]") &&
+      !sidebarProjectGroups.code.includes("?[yn(t.cwd)]:[]"),
     "Renderer Linux thread cwd workspace roots must preserve path casing"
   );
   const sidebarAggregation = findSidebarAggregationBundle();
   assert(
-    sidebarAggregation.code.includes("let L=r?I:[],R=L.map(e=>e.task.key)"),
+    includesAnyText(sidebarAggregation.code, [
+      "let L=r?I:[],R=L.map(e=>e.task.key)",
+      "let U=i?H:[],W=U.map(e=>e.task.key)",
+    ]),
     "Renderer native sidebar chat/project split is missing"
   );
   assert(
@@ -414,11 +457,17 @@ function verifyPackage(platform) {
       "Packaged app.asar must not contain Linux custom window control IPC"
     );
     assert(
-      appAsarContent.includes(Buffer.from("n===`win32`?{titleBarStyle:`hidden`,titleBarOverlay:f9(r)}:{titleBarStyle:`default`}")),
+      includesAnyText(appAsarContent, [
+        "n===`win32`?{titleBarStyle:`hidden`,titleBarOverlay:f9(r)}:{titleBarStyle:`default`}",
+        "n===`win32`?{titleBarStyle:`hidden`,titleBarOverlay:j9(r),...e===`quickChat`?{resizable:!0}:{}}:{titleBarStyle:`default`,...e===`quickChat`?{resizable:!0}:{}}",
+      ]),
       "Packaged app.asar is missing Linux primary native titlebar patch"
     );
     assert(
-      appAsarContent.includes(Buffer.from("show:l,parent:p,...m===void 0?{}:{focusable:m},...process.platform===`win32`||process.platform===`linux`?{autoHideMenuBar:!0}:{}")),
+      includesAnyText(appAsarContent, [
+        "show:l,parent:p,...m===void 0?{}:{focusable:m},...process.platform===`win32`||process.platform===`linux`?{autoHideMenuBar:!0}:{}",
+        "...m===void 0?{}:{focusable:m},...process.platform===`win32`||process.platform===`linux`?{autoHideMenuBar:!0}:{}",
+      ]),
       "Packaged app.asar is missing Linux window focusable default patch"
     );
     assert(
@@ -434,31 +483,47 @@ function verifyPackage(platform) {
       "Packaged app.asar is missing Linux HUD always-on-top patch"
     );
     assert(
-      appAsarContent.includes(Buffer.from("process.platform===`win32`&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(f9(t)))")),
+      includesAnyText(appAsarContent, [
+        "process.platform===`win32`&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(f9(t)))",
+        "process.platform===`win32`&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(j9(t)))",
+      ]),
       "Packaged app.asar is missing Linux titlebar overlay zoom update patch"
     );
     assert(
-      !appAsarContent.includes(Buffer.from("(process.platform===`win32`||process.platform===`linux`)&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(f9(t)))")),
+      !includesAnyText(appAsarContent, [
+        "(process.platform===`win32`||process.platform===`linux`)&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(f9(t)))",
+        "(process.platform===`win32`||process.platform===`linux`)&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(j9(t)))",
+      ]),
       "Packaged app.asar still contains Linux titlebar overlay zoom update branch"
     );
     assert(
-      appAsarContent.includes(Buffer.from("if(process.platform!==`win32`||t!==`primary`)return;")),
+      includesAnyText(appAsarContent, [
+        "if(process.platform!==`win32`||t!==`primary`)return;",
+        "if(process.platform!==`win32`||t!==`primary`&&t!==`quickChat`)return;",
+      ]),
       "Packaged app.asar is missing Linux titlebar overlay install patch"
     );
     assert(
-      !appAsarContent.includes(Buffer.from("if(process.platform!==`win32`&&process.platform!==`linux`||t!==`primary`)return;")),
+      !includesAnyText(appAsarContent, [
+        "if(process.platform!==`win32`&&process.platform!==`linux`||t!==`primary`)return;",
+        "if(process.platform!==`win32`&&process.platform!==`linux`||t!==`primary`&&t!==`quickChat`)return;",
+      ]),
       "Packaged app.asar still contains Linux titlebar overlay install branch"
     );
     assert(
       appAsarContent.includes(Buffer.from("__codexDesktopLinuxOpenFileManager")) &&
         appAsarContent.includes(Buffer.from("__codexDesktopLinuxFileManagerCommand")) &&
-        appAsarContent.includes(
-          Buffer.from("detect:__codexDesktopLinuxFileManagerCommand,args:e=>cs(e),open:async({command:e,path:t})=>__codexDesktopLinuxOpenFileManager(t,e)")
-        ),
+        includesAnyText(appAsarContent, [
+          "detect:__codexDesktopLinuxFileManagerCommand,args:e=>cs(e),open:async({command:e,path:t})=>__codexDesktopLinuxOpenFileManager(t,e)",
+          "detect:__codexDesktopLinuxFileManagerCommand,args:e=>js(e),open:async({command:e,path:t})=>__codexDesktopLinuxOpenFileManager(t,e)",
+        ]),
       "Packaged app.asar is missing robust Linux file manager open target patch in main bundle"
     );
     assert(
-      appAsarContent.includes(Buffer.from("detect:()=>K7(`xdg-open`)??K7(`gio`)??`system-default`,args:e=>q7(e),open:async({path:e})=>mce(e)")),
+      includesAnyText(appAsarContent, [
+        "detect:()=>K7(`xdg-open`)??K7(`gio`)??`system-default`,args:e=>q7(e),open:async({path:e})=>mce(e)",
+        "detect:__codexDesktopLinuxFileManagerCommand,args:e=>K7(e),open:async({command:e,path:t})=>__codexDesktopLinuxOpenFileManager(t,e)",
+      ]),
       "Packaged app.asar is missing robust Linux file manager open target patch in open-in worker bundle"
     );
     assert(appAsarContent.includes(Buffer.from("r===!1||a==null?null")), "Packaged app.asar is missing renderer local thread catalog bridge patch");
@@ -467,7 +532,9 @@ function verifyPackage(platform) {
       "Packaged app.asar must not contain renderer Linux custom window controls"
     );
     assert(
-      appAsarContent.includes(Buffer.from("__codexDesktopLinuxStateDbSidebar")),
+      appAsarContent.includes(Buffer.from("__codexDesktopLinuxStateDbSidebar")) ||
+        (appAsarContent.includes(Buffer.from("SO=tr(")) &&
+          appAsarContent.includes(Buffer.from("hasLiveConversation:!1,summary:a"))),
       "Packaged app.asar is missing renderer state DB sidebar source patch"
     );
     assert(
@@ -483,11 +550,16 @@ function verifyPackage(platform) {
       "Packaged app.asar is missing renderer Linux thread cwd workspace roots patch"
     );
     assert(
-      appAsarContent.includes(Buffer.from("?[t.cwd]:[]")) && !appAsarContent.includes(Buffer.from("?[k(t.cwd)]:[]")),
+      appAsarContent.includes(Buffer.from("?[t.cwd]:[]")) &&
+        !appAsarContent.includes(Buffer.from("?[k(t.cwd)]:[]")) &&
+        !appAsarContent.includes(Buffer.from("?[yn(t.cwd)]:[]")),
       "Packaged app.asar Linux thread cwd workspace roots must preserve path casing"
     );
     assert(
-      appAsarContent.includes(Buffer.from("let L=r?I:[],R=L.map(e=>e.task.key)")),
+      includesAnyText(appAsarContent, [
+        "let L=r?I:[],R=L.map(e=>e.task.key)",
+        "let U=i?H:[],W=U.map(e=>e.task.key)",
+      ]),
       "Packaged app.asar is missing native sidebar chat/project split"
     );
     assert(

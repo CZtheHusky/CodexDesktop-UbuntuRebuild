@@ -1,9 +1,9 @@
 {
   "name": "codex-rebuild",
   "productName": "Codex",
-  "version": "26.623.141536",
+  "version": "26.707.61608",
   "description": "Codex Desktop Ubuntu rebuild",
-  "main": "src/.vite/build/bootstrap.js",
+  "main": "src/.vite/build/early-bootstrap.js",
   "scripts": {
     "start": "node scripts/start-dev.js",
     "dev": "node scripts/start-dev.js",
@@ -64,7 +64,7 @@
     "zod": "^4.1.13"
   },
   "codexBuildFlavor": "prod",
-  "codexBuildNumber": "4753",
+  "codexBuildNumber": "5200",
   "codexSparkleFeedUrl": "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml",
   "codexSparklePublicKey": "mNfr1v9t63BfgDtlw4C8lRvSY6uMggIXABDOCi3tS6k="
 }

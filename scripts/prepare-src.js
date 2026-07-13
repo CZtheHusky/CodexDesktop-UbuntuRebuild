@@ -134,6 +134,7 @@ function main() {
   const args = process.argv.slice(2);
   const platIdx = args.indexOf("--platform");
   const platform = platIdx !== -1 ? args[platIdx + 1] : null;
+  let upstreamMain = ".vite/build/bootstrap.js";
 
   const VALID = ["mac-arm64", "mac-x64", "win", "linux-x64", "linux-arm64"];
   if (!platform || !VALID.includes(platform)) {
@@ -226,7 +227,8 @@ function main() {
     const rootPkg = JSON.parse(fs.readFileSync(rootPkgPath, "utf-8"));
     const oldVer = rootPkg.version;
     rootPkg.version = upstream.version || rootPkg.version;
-    rootPkg.main = "src/.vite/build/bootstrap.js";
+    upstreamMain = upstream.main || upstreamMain;
+    rootPkg.main = path.posix.join("src", upstreamMain.replace(/\\/g, "/"));
     for (const key of [
       "codexBuildNumber", "codexBuildFlavor",
       "codexSparkleFeedUrl", "codexSparklePublicKey",
@@ -242,9 +244,9 @@ function main() {
   // For mac/win: create stub main entry so forge validation passes.
   // The real code is in app.asar which we copy in packageAfterCopy.
   if (!isLinux) {
-    const stubDir = path.join(SRC, ".vite", "build");
-    fs.mkdirSync(stubDir, { recursive: true });
-    fs.writeFileSync(path.join(stubDir, "bootstrap.js"), "// stub - real code in app.asar\n");
+    const stubMain = path.join(SRC, upstreamMain);
+    fs.mkdirSync(path.dirname(stubMain), { recursive: true });
+    fs.writeFileSync(stubMain, "// stub - real code in app.asar\n");
     // Also need package.json in src/ for forge
     const asarPkg = path.join(asarContentDir, "package.json");
     if (fs.existsSync(asarPkg)) {
