@@ -12,6 +12,9 @@ const path = require("path");
 const PROJECT_ROOT = path.join(__dirname, "..");
 const BUILD_DIR = path.join(PROJECT_ROOT, "src", ".vite", "build");
 const WEBVIEW_ASSETS_DIR = path.join(PROJECT_ROOT, "src", "webview", "assets");
+const NATIVE_STATE_DB_SIDEBAR_SNIPPET = "a==null?null:{hasLiveConversation:!1,summary:a}";
+const NATIVE_SIDEBAR_AGGREGATION_SNIPPET =
+  "{allProjectGroups:w,allSidebarItems:T}=h(sE,{canStartProjectlessChat:o,localProjectActionsEnabled:l})";
 
 function fail(message) {
   console.error(`[x] ${message}`);
@@ -69,7 +72,7 @@ function findWebviewAppBundle() {
   for (const file of candidates) {
     const code = fs.readFileSync(file, "utf8");
     if (
-      code.includes("function KMe(") &&
+      (code.includes("function KMe(") || code.includes("function Wge(")) &&
       code.includes("localThreadCatalog") &&
       code.includes("567837310")
     ) {
@@ -94,7 +97,8 @@ function findSidebarStateBundle() {
     const code = fs.readFileSync(file, "utf8");
     if (
       (code.includes("3314958849") && code.includes("hasLiveConversation:!1,summary:n")) ||
-      (code.includes("SO=tr(") && code.includes("hasLiveConversation:!1,summary:a"))
+      (code.includes("SO=tr(") && code.includes("hasLiveConversation:!1,summary:a")) ||
+      code.includes(NATIVE_STATE_DB_SIDEBAR_SNIPPET)
     ) {
       return file;
     }
@@ -145,7 +149,8 @@ function findSidebarAggregationBundle() {
         code.includes("let L=r?")) ||
       (code.includes("visibleRecentChatItems:U") &&
         code.includes("visibleSidebarSectionKeys:Z") &&
-        code.includes("let U=i?H:[]"))
+        code.includes("let U=i?H:[]")) ||
+      code.includes(NATIVE_SIDEBAR_AGGREGATION_SNIPPET)
     ) {
       return file;
     }
@@ -395,6 +400,12 @@ function patchLinuxFileManagerOpenTarget(code) {
         replacement:
           "async function Tle(e){let{shell:t}=await import(`electron`),n=Ele(e);if(n&&(0,w.statSync)(n).isFile()){t.showItemInFolder(n);return}let r=n??e,i=await t.openPath(r);if(i)throw Error(i)}function Ele(e){let t=e;for(;;){if((0,w.existsSync)(t))return t;let e=(0,E.dirname)(t);if(e===t)return null;t=e}}function __codexDesktopLinuxFileManagerCommand(){return G7(`xdg-open`)??G7(`gio`)??`system-default`}async function __codexDesktopLinuxOpenFileManager(e,t){let n=Ele(e),r=n??e;if(n&&(0,w.statSync)(n).isFile())r=(0,E.dirname)(n);let i=[],a=[];t&&t!==`system-default`&&a.push(t);for(let e of[`xdg-open`,`gio`]){let t=G7(e);t&&a.push(t)}for(let e of[...new Set(a)])try{await q7(e,(0,E.basename)(e)===`gio`?[`open`,r]:[r]);return}catch(t){i.push(`${e}: ${t instanceof Error?t.message:String(t)}`)}let{shell:o}=await import(`electron`),s=await o.openPath(r);if(!s)return;i.push(`electron: ${s}`);throw Error(`Failed to open file manager for ${r}: ${i.join(`; `)}`)}",
       },
+      {
+        needle:
+          "async function Lle(e){let{shell:t}=await import(`electron`),n=Rle(e);if(n&&(0,w.statSync)(n).isFile()){t.showItemInFolder(n);return}let r=n??e,i=await t.openPath(r);if(i)throw Error(i)}function Rle(e){let t=e;for(;;){if((0,w.existsSync)(t))return t;let e=(0,E.dirname)(t);if(e===t)return null;t=e}}",
+        replacement:
+          "async function Lle(e){let{shell:t}=await import(`electron`),n=Rle(e);if(n&&(0,w.statSync)(n).isFile()){t.showItemInFolder(n);return}let r=n??e,i=await t.openPath(r);if(i)throw Error(i)}function Rle(e){let t=e;for(;;){if((0,w.existsSync)(t))return t;let e=(0,E.dirname)(t);if(e===t)return null;t=e}}function __codexDesktopLinuxFileManagerCommand(){return G7(`xdg-open`)??G7(`gio`)??`system-default`}async function __codexDesktopLinuxOpenFileManager(e,t){let n=Rle(e),r=n??e;if(n&&(0,w.statSync)(n).isFile())r=(0,E.dirname)(n);let i=[],a=[];t&&t!==`system-default`&&a.push(t);for(let e of[`xdg-open`,`gio`]){let t=G7(e);t&&a.push(t)}for(let e of[...new Set(a)])try{await q7(e,(0,E.basename)(e)===`gio`?[`open`,r]:[r]);return}catch(t){i.push(`${e}: ${t instanceof Error?t.message:String(t)}`)}let{shell:o}=await import(`electron`),s=await o.openPath(r);if(!s)return;i.push(`electron: ${s}`);throw Error(`Failed to open file manager for ${r}: ${i.join(`; `)}`)}",
+      },
     ];
 
     let patched = false;
@@ -452,6 +463,12 @@ function patchLinuxFileManagerOpenTarget(code) {
         "Cle=x9({id:`fileManager`,label:`Finder`,icon:`apps/finder.png`,kind:`fileManager`,darwin:{detect:()=>`open`,args:e=>K7(e)},win32:{label:`File Explorer`,icon:`apps/file-explorer.png`,detect:wle,args:e=>K7(e),open:async({path:e})=>Tle(e)}})",
       replacement:
         "Cle=x9({id:`fileManager`,label:`Finder`,icon:`apps/finder.png`,kind:`fileManager`,darwin:{detect:()=>`open`,args:e=>K7(e)},win32:{label:`File Explorer`,icon:`apps/file-explorer.png`,detect:wle,args:e=>K7(e),open:async({path:e})=>Tle(e)},linux:{label:`File Manager`,icon:`apps/file-explorer.png`,detect:__codexDesktopLinuxFileManagerCommand,args:e=>K7(e),open:async({command:e,path:t})=>__codexDesktopLinuxOpenFileManager(t,e)}})",
+    },
+    {
+      needle:
+        "Fle=S9({id:`fileManager`,label:`Finder`,icon:`apps/finder.png`,kind:`fileManager`,darwin:{detect:()=>`open`,args:e=>K7(e)},win32:{label:`File Explorer`,icon:`apps/file-explorer.png`,detect:Ile,args:e=>K7(e),open:async({path:e})=>Lle(e)}})",
+      replacement:
+        "Fle=S9({id:`fileManager`,label:`Finder`,icon:`apps/finder.png`,kind:`fileManager`,darwin:{detect:()=>`open`,args:e=>K7(e)},win32:{label:`File Explorer`,icon:`apps/file-explorer.png`,detect:Ile,args:e=>K7(e),open:async({path:e})=>Lle(e)},linux:{label:`File Manager`,icon:`apps/file-explorer.png`,detect:__codexDesktopLinuxFileManagerCommand,args:e=>K7(e),open:async({command:e,path:t})=>__codexDesktopLinuxOpenFileManager(t,e)}})",
     },
   ];
 
@@ -517,6 +534,10 @@ function patchRendererCatalogBridge(code) {
       needle: "o=!(r??i)||a==null?null:(0,YZe.jsx)(qZe,{service:a})",
       replacement: "o=r===!1||a==null?null:(0,YZe.jsx)(qZe,{service:a})",
     },
+    {
+      needle: "o=!(r??i)||a==null?null:(0,i1.jsx)(Gge,{service:a})",
+      replacement: "o=r===!1||a==null?null:(0,i1.jsx)(Gge,{service:a})",
+    },
   ];
 
   for (const { needle, replacement } of variants) {
@@ -534,7 +555,10 @@ function patchRendererStateDbSidebar(code) {
     return code;
   }
 
-  if (code.includes("SO=tr(") && code.includes("hasLiveConversation:!1,summary:a")) {
+  if (
+    (code.includes("SO=tr(") && code.includes("hasLiveConversation:!1,summary:a")) ||
+    code.includes(NATIVE_STATE_DB_SIDEBAR_SNIPPET)
+  ) {
     console.log("  [ok] Renderer state DB sidebar source is native");
     return code;
   }
@@ -608,6 +632,12 @@ function patchRendererProjectGroupsFromThreadCwds(code) {
       replacement:
         "b=Object.fromEntries(g.map(({hostId:e})=>{let t=new Map((h[e]??rP).map(e=>[yn(e.dir),e]));return y[e]?.forEach(e=>{t.set(yn(e.dir),e)}),[e,Array.from(t.values())]})),linuxWorkspaceRootData=globalThis.__codexDesktopLinuxThreadCwdWorkspaceRoots!==!1?{...r.data,roots:[...new Set([...(r.data?.roots??[]),...c.flatMap(t=>t.kind===`local`&&(t.hostId==null||t.hostId===`local`)&&t.cwd&&t.cwd!==`~`&&t.workspaceKind!==`projectless`&&!(Array.isArray(o)&&o.includes(t.conversationId))?[t.cwd]:[])])]}:r.data,x=kN([...AN(linuxWorkspaceRootData,h[i]??rP,e(Ga,void 0).data?.codexHome),...jN(Fn(e,kr.LOCAL_PROJECTS)),...MN(l,e(_O))],Fn(e,kr.PROJECT_ORDER)),",
     },
+    {
+      needle:
+        "x=Object.fromEntries(g.map(({hostId:e})=>{let t=new Map((h[e]??fP).map(e=>[ze(e.dir),e]));return b[e]?.forEach(e=>{t.set(ze(e.dir),e)}),[e,Array.from(t.values())]})),S=bN([...wN(r.data,h[i]??fP,e(xo,void 0).data?.codexHome),...TN(_(e,Se.LOCAL_PROJECTS)),...DN(l,e(FD))],_(e,Se.PROJECT_ORDER)),",
+      replacement:
+        "x=Object.fromEntries(g.map(({hostId:e})=>{let t=new Map((h[e]??fP).map(e=>[ze(e.dir),e]));return b[e]?.forEach(e=>{t.set(ze(e.dir),e)}),[e,Array.from(t.values())]})),linuxWorkspaceRootData=globalThis.__codexDesktopLinuxThreadCwdWorkspaceRoots!==!1?{...r.data,roots:[...new Set([...(r.data?.roots??[]),...c.flatMap(t=>t.kind===`local`&&(t.hostId==null||t.hostId===`local`)&&t.cwd&&t.cwd!==`~`&&t.workspaceKind!==`projectless`&&!(Array.isArray(o)&&o.includes(t.conversationId))?[t.cwd]:[])])]}:r.data,S=bN([...wN(linuxWorkspaceRootData,h[i]??fP,e(xo,void 0).data?.codexHome),...TN(_(e,Se.LOCAL_PROJECTS)),...DN(l,e(FD))],_(e,Se.PROJECT_ORDER)),",
+    },
   ];
 
   for (const { needle, replacement } of variants) {
@@ -624,10 +654,11 @@ function patchRendererNativeSidebarChats(code) {
     "let L=r?I:[],R=L.map(e=>e.task.key),z=!s&&i!==`connection`&&(L.length>0||e.canStartProjectlessChat),";
   const latestOriginal =
     "let U=i?H:[],W=U.map(e=>e.task.key),G=!l&&a!==`connection`&&(U.length>0||e.canStartProjectlessChat),";
+  const currentOriginal = NATIVE_SIDEBAR_AGGREGATION_SNIPPET;
   const fallback =
     "let L=r?(globalThis.__codexDesktopLinuxUngroupedSidebarFallback!==!1&&!D&&I.length===0&&E.length===0&&F.length>0?F:I):[],R=L.map(e=>e.task.key),z=!s&&i!==`connection`&&(L.length>0||e.canStartProjectlessChat),";
 
-  if (code.includes(original) || code.includes(latestOriginal)) {
+  if (code.includes(original) || code.includes(latestOriginal) || code.includes(currentOriginal)) {
     console.log("  [ok] Renderer sidebar chat/project split is native");
     return code;
   }

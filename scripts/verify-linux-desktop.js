@@ -9,6 +9,9 @@ const { execFileSync } = require("child_process");
 
 const PROJECT_ROOT = path.join(__dirname, "..");
 const SRC = path.join(PROJECT_ROOT, "src");
+const NATIVE_STATE_DB_SIDEBAR_SNIPPET = "a==null?null:{hasLiveConversation:!1,summary:a}";
+const NATIVE_SIDEBAR_AGGREGATION_SNIPPET =
+  "{allProjectGroups:w,allSidebarItems:T}=h(sE,{canStartProjectlessChat:o,localProjectActionsEnabled:l})";
 
 function argValue(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -135,7 +138,10 @@ function findWebviewAppBundle() {
 
   for (const file of candidates) {
     const code = fs.readFileSync(file, "utf8");
-    if (code.includes("function KMe(") && code.includes("localThreadCatalog")) {
+    if (
+      (code.includes("function KMe(") || code.includes("function Wge(")) &&
+      code.includes("localThreadCatalog")
+    ) {
       return { file, code };
     }
   }
@@ -156,7 +162,9 @@ function findWebviewAppShellBundle() {
     const code = fs.readFileSync(file, "utf8");
     if (
       (code.includes("(0,OG.jsx)(L6t,{})") && code.includes("className:`relative flex flex-col`")) ||
-      (code.includes("thread-app-shell-chrome") && code.includes("className:`relative flex flex-col`"))
+      (code.includes("thread-app-shell-chrome") && code.includes("className:`relative flex flex-col`")) ||
+      (code.includes("data-app-shell-tab-close-button") &&
+        code.includes("draggable absolute inset-x-0 top-0 electron:h-toolbar"))
     ) {
       return { file, code };
     }
@@ -178,7 +186,8 @@ function findSidebarStateBundle() {
     const code = fs.readFileSync(file, "utf8");
     if (
       (code.includes("3314958849") && code.includes("hasLiveConversation:!1,summary:n")) ||
-      (code.includes("SO=tr(") && code.includes("hasLiveConversation:!1,summary:a"))
+      (code.includes("SO=tr(") && code.includes("hasLiveConversation:!1,summary:a")) ||
+      code.includes(NATIVE_STATE_DB_SIDEBAR_SNIPPET)
     ) {
       return { file, code };
     }
@@ -227,7 +236,8 @@ function findSidebarAggregationBundle() {
         code.includes("let L=r?")) ||
       (code.includes("visibleRecentChatItems:U") &&
         code.includes("visibleSidebarSectionKeys:Z") &&
-        code.includes("let U=i?H:[]"))
+        code.includes("let U=i?H:[]")) ||
+      code.includes(NATIVE_SIDEBAR_AGGREGATION_SNIPPET)
     ) {
       return { file, code };
     }
@@ -349,7 +359,8 @@ function verifyPrepared() {
   const sidebarState = findSidebarStateBundle();
   assert(
     sidebarState.code.includes("__codexDesktopLinuxStateDbSidebar") ||
-      (sidebarState.code.includes("SO=tr(") && sidebarState.code.includes("hasLiveConversation:!1,summary:a")),
+      (sidebarState.code.includes("SO=tr(") && sidebarState.code.includes("hasLiveConversation:!1,summary:a")) ||
+      sidebarState.code.includes(NATIVE_STATE_DB_SIDEBAR_SNIPPET),
     "Renderer state DB sidebar source patch is missing"
   );
   const threadStore = findThreadStoreBundle();
@@ -377,6 +388,7 @@ function verifyPrepared() {
     includesAnyText(sidebarAggregation.code, [
       "let L=r?I:[],R=L.map(e=>e.task.key)",
       "let U=i?H:[],W=U.map(e=>e.task.key)",
+      NATIVE_SIDEBAR_AGGREGATION_SNIPPET,
     ]),
     "Renderer native sidebar chat/project split is missing"
   );
@@ -534,7 +546,8 @@ function verifyPackage(platform) {
     assert(
       appAsarContent.includes(Buffer.from("__codexDesktopLinuxStateDbSidebar")) ||
         (appAsarContent.includes(Buffer.from("SO=tr(")) &&
-          appAsarContent.includes(Buffer.from("hasLiveConversation:!1,summary:a"))),
+          appAsarContent.includes(Buffer.from("hasLiveConversation:!1,summary:a"))) ||
+        appAsarContent.includes(Buffer.from(NATIVE_STATE_DB_SIDEBAR_SNIPPET)),
       "Packaged app.asar is missing renderer state DB sidebar source patch"
     );
     assert(
@@ -559,6 +572,7 @@ function verifyPackage(platform) {
       includesAnyText(appAsarContent, [
         "let L=r?I:[],R=L.map(e=>e.task.key)",
         "let U=i?H:[],W=U.map(e=>e.task.key)",
+        NATIVE_SIDEBAR_AGGREGATION_SNIPPET,
       ]),
       "Packaged app.asar is missing native sidebar chat/project split"
     );
