@@ -13,6 +13,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
+const { assertExtractedVersion, loadPinnedInputs } = require("./pinned-inputs");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const SRC_DIR = path.join(PROJECT_ROOT, "src");
@@ -54,34 +55,38 @@ function resolveCodexVendor(platform) {
   if (!triple) return null;
   const binName = platform === "win" ? "codex.exe" : "codex";
 
-  // Try platform-specific package (0.128+)
   const PKG_MAP = { "mac-arm64": "codex-darwin-arm64", "mac-x64": "codex-darwin-x64", "win": "codex-win32-x64" };
-  const platPkg = PKG_MAP[platform];
-  if (platPkg) {
-    const p = path.join(PROJECT_ROOT, "node_modules", "@cometix", platPkg, "vendor", triple, "codex", binName);
-    if (fs.existsSync(p)) return p;
-  }
-  // Try old-style vendor (pre-0.128)
-  const localPath = path.join(PROJECT_ROOT, "node_modules", "@cometix", "codex", "vendor", triple, "codex", binName);
-  if (fs.existsSync(localPath)) return localPath;
-
-  // npm pack fallback — fetch platform-specific package
-  // First get latest cometix base version, then append platform suffix
   const PLAT_SUFFIX = {
-    "mac-arm64": "darwin-arm64", "mac-x64": "darwin-x64",
-    "win": "win32-x64",
-    "linux-x64": "linux-x64", "linux-arm64": "linux-arm64",
+    "mac-arm64": "darwin-arm64", "mac-x64": "darwin-x64", "win": "win32-x64",
   };
+  const { codexCliVersion } = loadPinnedInputs();
+  const platPkg = PKG_MAP[platform];
   const suffix = PLAT_SUFFIX[platform];
-  if (!suffix) return null;
+  if (!platPkg || !suffix) return null;
+  const expectedVersion = `${codexCliVersion}-${suffix}`;
 
-  let baseVer;
-  try {
-    baseVer = execSync("npm view @cometix/codex version", { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
-  } catch { return null; }
+  function packageHasVersion(packageDir, version) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf-8"));
+      return pkg.version === version;
+    } catch {
+      return false;
+    }
+  }
 
-  // e.g. "0.128.0-cometix" → "@cometix/codex@0.128.0-cometix-darwin-x64"
-  const platPkgSpec = `@cometix/codex@${baseVer}-${suffix}`;
+  // Try platform-specific package (0.128+), but only if it matches the pin.
+  const platformPackageDir = path.join(PROJECT_ROOT, "node_modules", "@cometix", platPkg);
+  const platformBinary = path.join(platformPackageDir, "vendor", triple, "codex", binName);
+  if (fs.existsSync(platformBinary) && packageHasVersion(platformPackageDir, expectedVersion)) {
+    return platformBinary;
+  }
+
+  // Try old-style vendor (pre-0.128), also requiring an exact version match.
+  const oldPackageDir = path.join(PROJECT_ROOT, "node_modules", "@cometix", "codex");
+  const oldBinary = path.join(oldPackageDir, "vendor", triple, "codex", binName);
+  if (fs.existsSync(oldBinary) && packageHasVersion(oldPackageDir, codexCliVersion)) return oldBinary;
+
+  const platPkgSpec = `@cometix/codex@${expectedVersion}`;
   console.log(`   [codex] fetching ${platPkgSpec} via npm pack...`);
   const tmpDir = path.join(require("os").tmpdir(), "cometix-codex-pack");
   fs.mkdirSync(tmpDir, { recursive: true });
@@ -89,10 +94,14 @@ function resolveCodexVendor(platform) {
     const tgzName = execSync(`npm pack ${platPkgSpec} --pack-destination "${tmpDir}"`, {
       cwd: tmpDir, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
     }).trim().split("\n").pop();
-    const extractDir = path.join(tmpDir, "extracted");
+    const extractDir = path.join(tmpDir, `extracted-${expectedVersion}`);
     clearDir(extractDir);
     execSync(`tar xzf "${path.join(tmpDir, tgzName)}" -C "${extractDir}"`, { stdio: "pipe" });
-    const p = path.join(extractDir, "package", "vendor", triple, "codex", binName);
+    const packageDir = path.join(extractDir, "package");
+    if (!packageHasVersion(packageDir, expectedVersion)) {
+      throw new Error(`package version does not match pin ${expectedVersion}`);
+    }
+    const p = path.join(packageDir, "vendor", triple, "codex", binName);
     if (fs.existsSync(p)) return p;
   } catch (e) {
     console.log(`   [!] npm pack failed: ${e.message}`);
@@ -110,11 +119,16 @@ function buildMac(platform) {
     console.error(`[x] ${platform}/_asar/ not found. Run sync-upstream first.`);
     process.exit(1);
   }
+  const pinned = platform === "mac-x64" ? loadPinnedInputs().macX64 : null;
+  if (pinned) assertExtractedVersion(asarDir, pinned, `${platform} source`);
 
   // 1. Find the .app in the ZIP extract cache
   const tempDir = path.join(require("os").tmpdir(), "codex-sync");
   const variant = platform === "mac-arm64" ? "arm64" : "x64";
-  const extractDir = path.join(tempDir, `${variant}-extract`);
+  const extractDir = path.join(
+    tempDir,
+    pinned ? `${variant}-${pinned.version}-extract` : `${variant}-extract`,
+  );
 
   // Find Codex.app
   let appPath = null;
@@ -297,7 +311,7 @@ function replaceCodex(platform, resourcesDir, binName) {
     try { fs.chmodSync(dest, 0o755); } catch {}
     console.log(`   [codex] replaced with @cometix/codex`);
   } else {
-    console.log(`   [!] @cometix/codex not found, keeping upstream codex`);
+    throw new Error(`Pinned @cometix/codex vendor not found for ${platform}`);
   }
 }
 

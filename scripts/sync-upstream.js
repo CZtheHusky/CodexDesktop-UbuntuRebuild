@@ -25,6 +25,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
+const { assertExtractedVersion, loadPinnedInputs, verifyPinnedFile } = require("./pinned-inputs");
 
 // TLS certs for MS delivery CDN
 const certsDir = path.join(__dirname, "certs");
@@ -41,7 +42,6 @@ const TEMP_DIR = path.join(require("os").tmpdir(), "codex-sync");
 const VERSION_FILE = path.join(__dirname, ".versions.json");
 
 const APPCAST_ARM64 = "https://persistent.oaistatic.com/codex-app-prod/appcast.xml";
-const APPCAST_X64 = "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml";
 
 const args = process.argv.slice(2);
 const FORCE = args.includes("--force");
@@ -117,7 +117,16 @@ function httpGet(url) {
 
 function curlDownload(url, dest, label) {
   console.log(`  [dl] ${label}`);
-  execSync(`curl -L --retry 3 --retry-delay 2 -o "${dest}" "${url}"`, { stdio: "inherit" });
+  const partial = `${dest}.download`;
+  fs.rmSync(partial, { force: true });
+  try {
+    execSync(`curl -L --fail --retry 3 --retry-delay 2 -o "${partial}" "${url}"`, { stdio: "inherit" });
+    fs.rmSync(dest, { force: true });
+    fs.renameSync(partial, dest);
+  } catch (error) {
+    fs.rmSync(partial, { force: true });
+    throw error;
+  }
 }
 
 function extractArchive(archive, dest) {
@@ -207,20 +216,26 @@ async function getWindowsVersion() {
 
 // ─── Extract macOS ──────────────────────────────────────────────
 
-async function syncMac(variant, appcastUrl, destDir) {
+async function syncMac(variant, info, destDir) {
   const label = `macOS-${variant}`;
   console.log(`\n-- ${label}`);
 
-  const info = await getAppcastVersion(appcastUrl);
   console.log(`   version: ${info.version} (build ${info.build})`);
 
   const zipPath = path.join(TEMP_DIR, `Codex-${variant}-${info.version}.zip`);
-  const extractDir = path.join(TEMP_DIR, `${variant}-extract`);
+  const extractDir = path.join(
+    TEMP_DIR,
+    variant === "x64" ? `${variant}-${info.version}-extract` : `${variant}-extract`,
+  );
 
-  if (!fs.existsSync(zipPath)) {
+  if (FORCE || !fs.existsSync(zipPath)) {
     curlDownload(info.url, zipPath, label);
   } else {
     console.log(`   [cache] ${zipPath}`);
+  }
+  if (info.sha256) {
+    console.log("   [verify] size + SHA-256");
+    await verifyPinnedFile(zipPath, info, label);
   }
 
   console.log("   [unzip]");
@@ -231,6 +246,9 @@ async function syncMac(variant, appcastUrl, destDir) {
   if (!resourcesDir) throw new Error(`${label}: Resources directory not found`);
 
   assembleOutput(resourcesDir, destDir, label);
+  if (info.sha256) {
+    assertExtractedVersion(path.join(destDir, "_asar"), info, label);
+  }
   return info;
 }
 
@@ -324,6 +342,7 @@ async function main() {
 
   const targets = selectedTargets();
   const results = {};
+  const pinned = targets.has("mac-x64") ? loadPinnedInputs() : null;
 
   // Detect versions
   if (targets.has("mac-arm64")) {
@@ -331,15 +350,15 @@ async function main() {
       const arm64Info = await getAppcastVersion(APPCAST_ARM64);
       console.log(`\n   mac-arm64: ${arm64Info.version} (build ${arm64Info.build})`);
       results["mac-arm64"] = arm64Info;
-    } catch (e) { console.error(`   [x] mac-arm64 check: ${e.message}`); }
+    } catch (e) { throw new Error(`mac-arm64 check: ${e.message}`); }
   }
 
   if (targets.has("mac-x64")) {
     try {
-      const x64Info = await getAppcastVersion(APPCAST_X64);
-      console.log(`${targets.has("mac-arm64") ? "" : "\n"}   mac-x64:   ${x64Info.version} (build ${x64Info.build})`);
+      const x64Info = pinned.macX64;
+      console.log(`${targets.has("mac-arm64") ? "" : "\n"}   mac-x64:   ${x64Info.version} (build ${x64Info.build}, pinned)`);
       results["mac-x64"] = x64Info;
-    } catch (e) { console.error(`   [x] mac-x64 check: ${e.message}`); }
+    } catch (e) { throw new Error(`mac-x64 check: ${e.message}`); }
   }
 
   if (targets.has("win")) {
@@ -347,7 +366,7 @@ async function main() {
       const winInfo = await getWindowsVersion();
       console.log(`   win:       ${winInfo.version}`);
       results.win = winInfo;
-    } catch (e) { console.error(`   [x] win check: ${e.message}`); }
+    } catch (e) { throw new Error(`win check: ${e.message}`); }
   }
 
   if (CHECK_ONLY) {
@@ -358,18 +377,18 @@ async function main() {
   // Download and extract
   if (targets.has("mac-arm64") && results["mac-arm64"]) {
     try {
-      results["mac-arm64"] = await syncMac("arm64", APPCAST_ARM64, path.join(SRC_DIR, "mac-arm64"));
-    } catch (e) { console.error(`   [x] mac-arm64: ${e.message}`); }
+      results["mac-arm64"] = await syncMac("arm64", results["mac-arm64"], path.join(SRC_DIR, "mac-arm64"));
+    } catch (e) { throw new Error(`mac-arm64 sync: ${e.message}`); }
   }
   if (targets.has("mac-x64") && results["mac-x64"]) {
     try {
-      results["mac-x64"] = await syncMac("x64", APPCAST_X64, path.join(SRC_DIR, "mac-x64"));
-    } catch (e) { console.error(`   [x] mac-x64: ${e.message}`); }
+      results["mac-x64"] = await syncMac("x64", results["mac-x64"], path.join(SRC_DIR, "mac-x64"));
+    } catch (e) { throw new Error(`mac-x64 sync: ${e.message}`); }
   }
   if (targets.has("win") && results.win) {
     try {
       results.win = await syncWin(path.join(SRC_DIR, "win"));
-    } catch (e) { console.error(`   [x] win: ${e.message}`); }
+    } catch (e) { throw new Error(`win sync: ${e.message}`); }
   }
 
   const saved = loadVersions();

@@ -67,6 +67,25 @@ For the default Ubuntu x64 build:
 npm run sync -- --platform linux-x64 --skip-win
 ```
 
+The x64 sync is reproducible: `package.json` pins the exact upstream macOS x64
+URL, version, build, file size, SHA-256 digest, and `@cometix/codex` CLI
+version. The sync command verifies a cached or downloaded archive before using
+it and never consults the x64 appcast for the latest release.
+
+When intentionally adapting the branch to the latest upstream x64 release,
+update all pins together:
+
+```bash
+npm run update:pins
+```
+
+The update command inspects the Codex CLI version bundled in the macOS app. It
+prefers the same `@cometix/codex` version for Linux x64. If that exact mirror
+does not exist, it selects the most recently published Linux x64 package that
+is not newer than the macOS app release, and records both versions, timestamps,
+and the selection rule in `package.json`. Version extraction or package
+selection ambiguity is fatal; the command does not silently guess.
+
 For Ubuntu arm64:
 
 ```bash
@@ -99,6 +118,8 @@ The Linux build pipeline runs these steps:
 5. `verify-linux-desktop.js` checks the prepared tree.
 6. Electron Forge creates the package.
 7. `verify-linux-desktop.js` checks the generated `.deb`.
+8. `archive-build-history.js` copies verified artifacts into the local build
+   history and keeps the latest 3 versions.
 
 ## Output
 
@@ -113,6 +134,16 @@ For arm64 builds, use the matching `out/make/deb/arm64/` package.
 Electron Forge may also emit `.rpm` and `.zip` files because the maker config
 still contains those makers. They are build artifacts only; this repo supports
 the Ubuntu `.deb` install path.
+
+After a successful Linux build, artifacts are also copied to the ignored local
+history directory:
+
+```text
+.build-history/codex-desktop/<version>+<build>/<platform>/make/
+```
+
+The archive keeps the latest 3 Codex Desktop version directories. Rebuilding the
+same version refreshes that version's platform directory.
 
 ## Install
 
@@ -192,6 +223,7 @@ Generated directories:
 ```text
 src/                               Ignored build input/cache
 out/                               Ignored package output
+.build-history/                    Ignored local build history
 ```
 
 ## Credits

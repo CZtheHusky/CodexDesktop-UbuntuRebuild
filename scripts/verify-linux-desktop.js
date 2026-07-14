@@ -6,6 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const { loadPinnedInputs } = require("./pinned-inputs");
 
 const PROJECT_ROOT = path.join(__dirname, "..");
 const SRC = path.join(PROJECT_ROOT, "src");
@@ -580,14 +581,24 @@ function verifyPackage(platform) {
       !appAsarContent.includes(Buffer.from("__codexDesktopLinuxUngroupedSidebarFallback")),
       "Packaged app.asar must not contain renderer ungrouped sidebar fallback"
     );
-    assert(fs.existsSync(path.join(resources, "codex")), "Packaged Codex CLI binary is missing");
+    const codexBinary = path.join(resources, "codex");
+    assert(fs.existsSync(codexBinary), "Packaged Codex CLI binary is missing");
     assert(fs.existsSync(path.join(resources, "rg")), "Packaged rg binary is missing");
     ok("packaged app.asar contains Linux runtime patches");
 
-    assert(isElf(path.join(resources, "codex")), "Packaged resources/codex must be a Linux ELF binary");
+    assert(isElf(codexBinary), "Packaged resources/codex must be a Linux ELF binary");
     assert(isElf(path.join(resources, "rg")), "Packaged resources/rg must be a Linux ELF binary");
     assert(!fs.existsSync(path.join(resources, "cua_node")), "Extracted package must not contain resources/cua_node");
-    ok("packaged Codex CLI and rg are Linux ELF binaries");
+    const { codexCliVersion } = loadPinnedInputs();
+    const cliVersion = execFileSync(codexBinary, ["--version"], {
+      encoding: "utf8",
+      env: { ...process.env, HOME: tempDir },
+    }).trim();
+    assert(
+      cliVersion === `codex-cli ${codexCliVersion}`,
+      `Packaged Codex CLI version ${cliVersion || "<missing>"} does not match pin ${codexCliVersion}`,
+    );
+    ok(`packaged Codex CLI ${codexCliVersion} and rg are Linux ELF binaries`);
 
     assertNoMachO(libRoot, "extracted deb");
   } finally {
