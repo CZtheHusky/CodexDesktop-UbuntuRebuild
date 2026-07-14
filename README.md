@@ -184,6 +184,22 @@ The package verifier checks the `.deb` entrypoints, desktop launcher metadata,
 Linux runtime patches, bundled `codex` and `rg` binaries, and absence of
 macOS-only Mach-O files.
 
+## Acceptance
+
+Every upstream adaptation should pass the reusable acceptance flow before the
+result is installed for daily use:
+
+```bash
+npm run build:accepted
+```
+
+This runs unit tests, the Linux build, package/static verifiers, generated bundle
+syntax checks, GUI smoke tests with an empty temporary profile, GUI smoke tests
+with a temporary clone of the local Codex profile, and build-history checks.
+
+For the detailed acceptance contract and profile policy, see
+[`docs/acceptance.md`](docs/acceptance.md).
+
 ## Troubleshooting
 
 If the build fails with `Source not found` or `_asar/ not found`, run:
