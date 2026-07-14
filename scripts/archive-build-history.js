@@ -10,7 +10,7 @@ const path = require("path");
 
 const PROJECT_ROOT = path.join(__dirname, "..");
 const OUT_MAKE = path.join(PROJECT_ROOT, "out", "make");
-const HISTORY_ROOT = path.join(PROJECT_ROOT, ".build-history", "codex-desktop");
+const HISTORY_ROOT = path.join(PROJECT_ROOT, "build-history", "codex-desktop");
 const MAX_VERSION_HISTORY = 3;
 const VALID_PLATFORMS = new Set(["linux-x64", "linux-arm64"]);
 

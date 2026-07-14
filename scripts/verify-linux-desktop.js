@@ -13,6 +13,12 @@ const SRC = path.join(PROJECT_ROOT, "src");
 const NATIVE_STATE_DB_SIDEBAR_SNIPPET = "a==null?null:{hasLiveConversation:!1,summary:a}";
 const NATIVE_SIDEBAR_AGGREGATION_SNIPPET =
   "{allProjectGroups:w,allSidebarItems:T}=h(sE,{canStartProjectlessChat:o,localProjectActionsEnabled:l})";
+const PLAN_MODE_COMMAND_WITHOUT_KEYBINDING =
+  "{id:`composer.togglePlanMode`,titleIntlId:`codex.command.composer.togglePlanMode`,descriptionIntlId:`codex.commandDescription.composer.togglePlanMode`,shortcutScope:`app`}";
+const PLAN_MODE_COMMAND_WITH_BROKEN_SHIFT_TAB =
+  "{id:`composer.togglePlanMode`,titleIntlId:`codex.command.composer.togglePlanMode`,descriptionIntlId:`codex.commandDescription.composer.togglePlanMode`,shortcutScope:`app`,electron:{defaultKeybindings:[{key:`Shift+Tab`]}}}";
+const PLAN_MODE_COMMAND_WITH_SHIFT_TAB =
+  "{id:`composer.togglePlanMode`,titleIntlId:`codex.command.composer.togglePlanMode`,descriptionIntlId:`codex.commandDescription.composer.togglePlanMode`,shortcutScope:`app`,electron:{defaultKeybindings:[{key:`Shift+Tab`}]}}";
 
 function argValue(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -270,6 +276,32 @@ function findSidebarProjectGroupsBundle() {
   fail("Could not locate Linux sidebar project groups bundle");
 }
 
+function findPlanModeCommandBundles() {
+  const dirs = [path.join(SRC, ".vite", "build"), path.join(SRC, "webview", "assets")];
+  const bundles = [];
+
+  for (const dir of dirs) {
+    assert(fs.existsSync(dir), `Missing Linux bundle dir: ${rel(dir)}`);
+
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith(".js")) continue;
+
+      const file = path.join(dir, name);
+      const code = fs.readFileSync(file, "utf8");
+      if (
+        code.includes(PLAN_MODE_COMMAND_WITHOUT_KEYBINDING) ||
+        code.includes(PLAN_MODE_COMMAND_WITH_BROKEN_SHIFT_TAB) ||
+        code.includes(PLAN_MODE_COMMAND_WITH_SHIFT_TAB)
+      ) {
+        bundles.push({ file, code });
+      }
+    }
+  }
+
+  assert(bundles.length > 0, "Could not locate composer.togglePlanMode command bundles");
+  return bundles;
+}
+
 function verifyPrepared() {
   console.log("-- verify-linux-desktop: prepared");
 
@@ -397,6 +429,22 @@ function verifyPrepared() {
     !sidebarAggregation.code.includes("__codexDesktopLinuxUngroupedSidebarFallback"),
     "Renderer ungrouped sidebar fallback must not be present"
   );
+  const planModeBundles = findPlanModeCommandBundles();
+  for (const { file, code } of planModeBundles) {
+    assert(
+      code.includes(PLAN_MODE_COMMAND_WITH_SHIFT_TAB),
+      `Plan mode Shift+Tab shortcut is missing from ${rel(file)}`
+    );
+    assert(
+      !code.includes(PLAN_MODE_COMMAND_WITHOUT_KEYBINDING),
+      `Unpatched Plan mode command registration remains in ${rel(file)}`
+    );
+    assert(
+      !code.includes(PLAN_MODE_COMMAND_WITH_BROKEN_SHIFT_TAB),
+      `Broken Plan mode Shift+Tab command registration remains in ${rel(file)}`
+    );
+  }
+  ok(`Plan mode Shift+Tab shortcut is present in ${planModeBundles.length} bundle(s)`);
   ok("Linux runtime bundle patches are present");
 
   assert(!fs.existsSync(path.join(SRC, "cua_node")), "Flat Linux src/ must not contain cua_node");
@@ -580,6 +628,18 @@ function verifyPackage(platform) {
     assert(
       !appAsarContent.includes(Buffer.from("__codexDesktopLinuxUngroupedSidebarFallback")),
       "Packaged app.asar must not contain renderer ungrouped sidebar fallback"
+    );
+    assert(
+      appAsarContent.includes(Buffer.from(PLAN_MODE_COMMAND_WITH_SHIFT_TAB)),
+      "Packaged app.asar is missing Plan mode Shift+Tab shortcut"
+    );
+    assert(
+      !appAsarContent.includes(Buffer.from(PLAN_MODE_COMMAND_WITHOUT_KEYBINDING)),
+      "Packaged app.asar still contains unpatched Plan mode command registration"
+    );
+    assert(
+      !appAsarContent.includes(Buffer.from(PLAN_MODE_COMMAND_WITH_BROKEN_SHIFT_TAB)),
+      "Packaged app.asar still contains broken Plan mode Shift+Tab command registration"
     );
     const codexBinary = path.join(resources, "codex");
     assert(fs.existsSync(codexBinary), "Packaged Codex CLI binary is missing");

@@ -72,10 +72,11 @@ module.exports = {
   },
   rebuildConfig: {},
   makers: [
-    { name: "@electron-forge/maker-dmg", config: { format: "ULFO", icon: "./resources/electron.icns" } },
+    { name: "@electron-forge/maker-dmg", platforms: ["darwin"], config: { format: "ULFO", icon: "./resources/electron.icns" } },
     { name: "@electron-forge/maker-zip", platforms: ["darwin"] },
     {
       name: "@electron-forge/maker-squirrel",
+      platforms: ["win32"],
       config: {
         name: "Codex",
         authors: "OpenAI, Cometix Space",
@@ -89,11 +90,6 @@ module.exports = {
       name: "@electron-forge/maker-deb",
       config: { options: { name: "codex-desktop", productName: "Codex Desktop", genericName: "AI Coding Assistant", categories: ["Development", "Utility"], bin: "Codex", maintainer: "Cometix Space", homepage: "https://github.com/Haleclipse/CodexDesktop-Rebuild", icon: "./resources/electron.png", desktopTemplate: linuxDesktopTemplate } },
     },
-    {
-      name: "@electron-forge/maker-rpm",
-      config: { options: { name: "codex-desktop", productName: "Codex Desktop", genericName: "AI Coding Assistant", categories: ["Development", "Utility"], bin: "Codex", license: "Apache-2.0", homepage: "https://github.com/Haleclipse/CodexDesktop-Rebuild", icon: "./resources/electron.png", desktopTemplate: linuxDesktopTemplate } },
-    },
-    { name: "@electron-forge/maker-zip", platforms: ["linux"] },
   ],
   plugins: [
     // No auto-unpack-natives — we provide upstream app.asar.unpacked directly

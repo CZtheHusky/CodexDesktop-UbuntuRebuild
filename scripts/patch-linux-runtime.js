@@ -15,6 +15,12 @@ const WEBVIEW_ASSETS_DIR = path.join(PROJECT_ROOT, "src", "webview", "assets");
 const NATIVE_STATE_DB_SIDEBAR_SNIPPET = "a==null?null:{hasLiveConversation:!1,summary:a}";
 const NATIVE_SIDEBAR_AGGREGATION_SNIPPET =
   "{allProjectGroups:w,allSidebarItems:T}=h(sE,{canStartProjectlessChat:o,localProjectActionsEnabled:l})";
+const PLAN_MODE_COMMAND_WITHOUT_KEYBINDING =
+  "{id:`composer.togglePlanMode`,titleIntlId:`codex.command.composer.togglePlanMode`,descriptionIntlId:`codex.commandDescription.composer.togglePlanMode`,shortcutScope:`app`}";
+const PLAN_MODE_COMMAND_WITH_BROKEN_SHIFT_TAB =
+  "{id:`composer.togglePlanMode`,titleIntlId:`codex.command.composer.togglePlanMode`,descriptionIntlId:`codex.commandDescription.composer.togglePlanMode`,shortcutScope:`app`,electron:{defaultKeybindings:[{key:`Shift+Tab`]}}}";
+const PLAN_MODE_COMMAND_WITH_SHIFT_TAB =
+  "{id:`composer.togglePlanMode`,titleIntlId:`codex.command.composer.togglePlanMode`,descriptionIntlId:`codex.commandDescription.composer.togglePlanMode`,shortcutScope:`app`,electron:{defaultKeybindings:[{key:`Shift+Tab`}]}}";
 
 function fail(message) {
   console.error(`[x] ${message}`);
@@ -183,6 +189,32 @@ function findSidebarProjectGroupsBundle() {
   }
 
   fail("Could not locate Linux sidebar project groups bundle");
+}
+
+function findPlanModeCommandBundles() {
+  const dirs = [BUILD_DIR, WEBVIEW_ASSETS_DIR];
+  const bundles = [];
+
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) fail(`Missing bundle dir: ${path.relative(PROJECT_ROOT, dir)}`);
+
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith(".js")) continue;
+
+      const file = path.join(dir, name);
+      const code = fs.readFileSync(file, "utf8");
+      if (
+        code.includes(PLAN_MODE_COMMAND_WITHOUT_KEYBINDING) ||
+        code.includes(PLAN_MODE_COMMAND_WITH_BROKEN_SHIFT_TAB) ||
+        code.includes(PLAN_MODE_COMMAND_WITH_SHIFT_TAB)
+      ) {
+        bundles.push(file);
+      }
+    }
+  }
+
+  if (bundles.length === 0) fail("Could not locate composer.togglePlanMode command bundles");
+  return bundles;
 }
 
 function replaceOnce(code, needle, replacement, label) {
@@ -671,6 +703,35 @@ function patchRendererNativeSidebarChats(code) {
   fail("renderer native sidebar chat/project split: patch anchor not found");
 }
 
+function patchPlanModeShortcut(code) {
+  if (code.includes(PLAN_MODE_COMMAND_WITH_SHIFT_TAB)) {
+    console.log("  [ok] Plan mode Shift+Tab shortcut already patched");
+    return code;
+  }
+
+  if (code.includes(PLAN_MODE_COMMAND_WITH_BROKEN_SHIFT_TAB)) {
+    console.log("  [patch] Repair Plan mode Shift+Tab shortcut syntax");
+    return replaceOnce(
+      code,
+      PLAN_MODE_COMMAND_WITH_BROKEN_SHIFT_TAB,
+      PLAN_MODE_COMMAND_WITH_SHIFT_TAB,
+      "Plan mode Shift+Tab shortcut syntax"
+    );
+  }
+
+  if (!code.includes(PLAN_MODE_COMMAND_WITHOUT_KEYBINDING)) {
+    fail("Plan mode shortcut: patch anchor not found");
+  }
+
+  console.log("  [patch] Add Shift+Tab shortcut for Plan mode");
+  return replaceOnce(
+    code,
+    PLAN_MODE_COMMAND_WITHOUT_KEYBINDING,
+    PLAN_MODE_COMMAND_WITH_SHIFT_TAB,
+    "Plan mode Shift+Tab shortcut"
+  );
+}
+
 function main() {
   const bundle = findMainBundle();
   console.log(`-- patch-linux-runtime: ${path.relative(PROJECT_ROOT, bundle)}`);
@@ -759,6 +820,19 @@ function main() {
     console.log("  [ok] Linux sidebar native split patches applied");
   } else {
     console.log("  [ok] No sidebar aggregation changes needed");
+  }
+
+  for (const planModeBundle of findPlanModeCommandBundles()) {
+    console.log(`-- patch-linux-runtime: ${path.relative(PROJECT_ROOT, planModeBundle)}`);
+    const originalPlanModeBundle = fs.readFileSync(planModeBundle, "utf8");
+    const planModeBundleCode = patchPlanModeShortcut(originalPlanModeBundle);
+
+    if (planModeBundleCode !== originalPlanModeBundle) {
+      fs.writeFileSync(planModeBundle, planModeBundleCode, "utf8");
+      console.log("  [ok] Plan mode shortcut patch applied");
+    } else {
+      console.log("  [ok] No Plan mode shortcut changes needed");
+    }
   }
 }
 

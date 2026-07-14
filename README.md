@@ -26,6 +26,7 @@ and bundled `codex`/`rg` binaries.
   `/usr/bin/codex`.
 - Uses the native Ubuntu window titlebar instead of custom Linux window controls.
 - Removes macOS-only runtime resources from the Linux package.
+- Restores the `Shift+Tab` default shortcut for toggling Codex Plan mode.
 - Rebuilds native Node modules for Linux and verifies that packaged binaries are
   Linux ELF files, not macOS Mach-O files.
 - Applies Linux runtime fixes for startup thread sync, sidebar history/project
@@ -44,7 +45,7 @@ sudo apt update
 sudo apt install -y \
   git curl ca-certificates \
   build-essential python3 pkg-config \
-  dpkg-dev fakeroot rpm p7zip-full
+  dpkg-dev fakeroot p7zip-full
 ```
 
 Install Node.js 20 or newer before running the npm commands below.
@@ -129,17 +130,14 @@ The supported Ubuntu package is written to:
 out/make/deb/x64/codex-desktop_<version>_amd64.deb
 ```
 
-For arm64 builds, use the matching `out/make/deb/arm64/` package.
-
-Electron Forge may also emit `.rpm` and `.zip` files because the maker config
-still contains those makers. They are build artifacts only; this repo supports
-the Ubuntu `.deb` install path.
+For arm64 builds, use the matching `out/make/deb/arm64/` package. Linux builds
+intentionally emit only the supported Ubuntu `.deb` artifact.
 
 After a successful Linux build, artifacts are also copied to the ignored local
 history directory:
 
 ```text
-.build-history/codex-desktop/<version>+<build>/<platform>/make/
+build-history/codex-desktop/<version>+<build>/<platform>/make/
 ```
 
 The archive keeps the latest 3 Codex Desktop version directories. Rebuilding the
@@ -199,9 +197,6 @@ Use `--platform linux-arm64` instead when building on Ubuntu arm64.
 If archive extraction fails, confirm `p7zip-full` is installed and that `7zz` or
 `7z` is available on `PATH`.
 
-If package creation fails around RPM tooling, confirm the `rpm` package is
-installed. The supported installer remains the generated `.deb`.
-
 If native module rebuilds fail, confirm the build is running on Ubuntu for the
 same architecture you are packaging, then reinstall dependencies with `npm ci`
 and rerun the Linux build command.
@@ -223,7 +218,7 @@ Generated directories:
 ```text
 src/                               Ignored build input/cache
 out/                               Ignored package output
-.build-history/                    Ignored local build history
+build-history/                     Ignored local build history
 ```
 
 ## Credits
