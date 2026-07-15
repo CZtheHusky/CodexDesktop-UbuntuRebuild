@@ -119,10 +119,14 @@ Before installation, acceptance must locate a `.deb` for the currently
 installed accepted version. If no rollback artifact exists, installation is
 blocked.
 
-Install the candidate with `sudo apt install --reinstall`. If installation or
-the installed-app UI suite fails after replacement, reinstall the rollback
-package and verify that it can complete the empty-profile startup gate. A
-rollback failure must be reported explicitly.
+Install the candidate with privileged `apt install --reinstall`. If
+installation or the installed-app UI suite fails after replacement, reinstall
+the rollback package and verify that it can complete the empty-profile startup
+gate. A rollback failure must be reported explicitly.
+
+The runner uses an existing non-interactive `sudo` credential when available;
+otherwise an X11 desktop session uses `pkexec` for the system authentication
+dialog. Credentials must never be passed through command arguments or logs.
 
 Each run writes a local, ignored report under
 `build-history/acceptance-runs/<run-id>/`. The report records the app/build/CLI

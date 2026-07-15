@@ -32,6 +32,15 @@ function commandOutput(command, args, fallback = null) {
   }
 }
 
+function commandSucceeds(command, args) {
+  try {
+    execFileSync(command, args, { cwd: PROJECT_ROOT, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function readPackageInfo() {
   const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8"));
   return {
@@ -127,9 +136,15 @@ function pruneAcceptanceRuns(currentDir, limit = 10) {
 }
 
 function installCommand(deb) {
-  return process.getuid?.() === 0
-    ? { command: "apt", args: ["install", "-y", "--reinstall", deb] }
-    : { command: "sudo", args: ["apt", "install", "-y", "--reinstall", deb] };
+  const aptArgs = ["install", "-y", "--reinstall", deb];
+  if (process.getuid?.() === 0) return { command: "apt", args: aptArgs };
+  if (commandSucceeds("sudo", ["-n", "true"])) {
+    return { command: "sudo", args: ["-n", "apt", ...aptArgs] };
+  }
+  if (process.env.DISPLAY && commandOutput("which", ["pkexec"], null)) {
+    return { command: "pkexec", args: ["apt", ...aptArgs] };
+  }
+  return { command: "sudo", args: ["apt", ...aptArgs] };
 }
 
 function createAcceptanceReport(platform) {
@@ -260,7 +275,11 @@ async function runAcceptance(options = {}) {
       const rollbackSnapshot = path.join(rollbackDir, path.basename(rollbackDeb));
       fs.copyFileSync(rollbackDeb, rollbackSnapshot, fs.constants.COPYFILE_FICLONE);
       rollbackDeb = rollbackSnapshot;
-      if (!commandOutput("which", ["sudo"], null) && process.getuid?.() !== 0) fail("sudo is required for package installation");
+      const canElevate =
+        process.getuid?.() === 0 ||
+        commandOutput("which", ["sudo"], null) ||
+        (process.env.DISPLAY && commandOutput("which", ["pkexec"], null));
+      if (!canElevate) fail("sudo or pkexec is required for package installation");
       report.install.rollbackDebSha256 = sha256File(rollbackDeb);
     });
 

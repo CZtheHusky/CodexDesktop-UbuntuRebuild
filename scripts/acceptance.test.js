@@ -156,6 +156,7 @@ test("acceptance runner requires install, core UI, rollback, and promotion", () 
   assert.match(runner, /async function rollback/);
   assert.match(runner, /installAttempted = true/);
   assert.match(runner, /if \(installAttempted\) await rollback\(\)/);
+  assert.match(runner, /command: "pkexec"/);
   assert.match(runner, /--channel", "accepted"/);
 });
 
