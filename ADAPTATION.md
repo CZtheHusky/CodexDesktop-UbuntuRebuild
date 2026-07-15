@@ -83,7 +83,8 @@ screenshots. A stale baseline is a blocking failure. The baseline must never
 contain host Codex authentication, profile data, or an installed Codex package.
 Normal acceptance reuses the read-only baseline: `vm:reset` and `vm:discard`
 replace only the small qcow2 overlay. Do not reprovision the operating system on
-every run.
+every run. A reset must wait until the previous QEMU instance has released both
+loopback SSH and SPICE ports before starting the next instance.
 
 The host requires KVM/QEMU, `qemu-img`, `cloud-localds`, OpenSSH, and access to
 `/dev/kvm`; `remote-viewer` is optional. VM lifecycle commands run as the normal

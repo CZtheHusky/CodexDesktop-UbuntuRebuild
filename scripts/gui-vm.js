@@ -209,13 +209,40 @@ function qemuArgs(disk) {
   ];
 }
 
+function hostPortAvailable(port, probe = spawnSync) {
+  const script = [
+    "const net = require('node:net');",
+    "const server = net.createServer();",
+    "server.once('error', () => process.exit(1));",
+    "server.listen(Number(process.argv[1]), '127.0.0.1', () => server.close(() => process.exit(0)));",
+  ].join("");
+  return probe(process.execPath, ["-e", script, String(port)], {
+    cwd: PROJECT_ROOT,
+    stdio: "ignore",
+  }).status === 0;
+}
+
+function waitForHostPorts(timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (hostPortAvailable(SSH_PORT) && hostPortAvailable(SPICE_PORT)) return;
+    sleep(250);
+  }
+  fail(`VM ports did not become available: SSH ${SSH_PORT}, SPICE ${SPICE_PORT}`);
+}
+
 function startQemu(disk) {
   if (isRunning()) fail(`VM is already running with PID ${readPid()}`);
+  waitForHostPorts();
   for (const file of [PID_FILE, QMP_SOCKET, QGA_SOCKET]) fs.rmSync(file, { force: true });
   fs.rmSync(path.join(STATE_ROOT, "known_hosts"), { force: true });
   const logFd = fs.openSync(LOG_FILE, "a", 0o600);
   try {
-    run("qemu-system-x86_64", qemuArgs(disk), { stdio: ["ignore", logFd, logFd] });
+    const result = run("qemu-system-x86_64", qemuArgs(disk), {
+      allowFailure: true,
+      stdio: ["ignore", logFd, logFd],
+    });
+    if (result.status !== 0) fail(`QEMU exited ${result.status}; inspect ${LOG_FILE}`);
   } finally {
     fs.closeSync(logFd);
   }
@@ -712,6 +739,7 @@ module.exports = {
   discardVm,
   expectedBaselineIdentity,
   guestExec: ssh,
+  hostPortAvailable,
   pullDirectoryFromGuest,
   pushFileToGuest,
   qemuArgs,

@@ -8,12 +8,26 @@ const root = path.join(__dirname, "..");
 const {
   BASELINE_SCHEMA_VERSION,
   expectedBaselineIdentity,
+  hostPortAvailable,
   qemuArgs,
   ppmHasVisibleContent,
   proxyTunnelArgs,
   scpArgs,
   sshArgs,
 } = require("./gui-vm");
+
+test("VM startup treats a failed loopback bind probe as an occupied port", () => {
+  let invocation = null;
+  const occupied = hostPortAvailable(5930, (command, args, options) => {
+    invocation = { args, command, options };
+    return { status: 1 };
+  });
+  assert.equal(occupied, false);
+  assert.equal(invocation.command, process.execPath);
+  assert.equal(invocation.args.at(-1), "5930");
+  assert.equal(invocation.options.stdio, "ignore");
+  assert.equal(hostPortAvailable(5930, () => ({ status: 0 })), true);
+});
 
 test("VM networking and display stay loopback-only to isolate acceptance", () => {
   const args = qemuArgs("/tmp/working.qcow2").join(" ");
