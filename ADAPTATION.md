@@ -66,6 +66,8 @@ never launch against the live profile.
   profile contents to logs, reports, screenshots metadata, or Git.
 - Stream the snapshot into guest `/run` tmpfs and delete the host temporary copy
   immediately. `--keep-profile` must never be used by mandatory acceptance.
+- Keep the guest tmpfs path short enough for Chromium to append Unix socket
+  names without exceeding Linux `sun_path` limits.
 - Verify that source authentication files do not change while taking the
   snapshot. The host app may be reopened after the snapshot is complete.
 
@@ -95,6 +97,11 @@ and does not open a host window unless `npm run vm:viewer` is requested. X11,
 exercised for attachment tests. A missing GUI automation prerequisite is a
 blocking failure, never a skipped check. Host-desktop execution is a debugging
 fallback only and requires an unlocked X11 session.
+
+The CDP smoke driver runs with the packaged Electron's Node runtime so its
+WebSocket support matches the candidate. The driver must remove
+`ELECTRON_RUN_AS_NODE` from the child environment before launching the desktop
+application.
 
 Each VM start establishes an SSH reverse tunnel from guest
 `127.0.0.1:7897` to host `127.0.0.1:7897` and verifies the proxy egress before

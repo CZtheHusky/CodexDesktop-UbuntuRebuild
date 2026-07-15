@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 /** Mandatory host build and VM-isolated installed GUI acceptance runner. */
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -24,7 +25,7 @@ const { redactLog } = require("./smoke-linux-desktop");
 const PROJECT_ROOT = path.join(__dirname, "..");
 const REPORTS_ROOT = path.join(PROJECT_ROOT, "build-history", "acceptance-runs");
 const GUEST_DISK_ROOT = "/home/codex-test/codex-acceptance";
-const GUEST_TMP_ROOT = "/run/user/1000/codex-acceptance";
+const GUEST_TMP_ROOT = "/run/user/1000/ca";
 const PACKAGE_IDENTITY_PATHS = [
   "usr/lib/codex-desktop/Codex",
   "usr/lib/codex-desktop/resources/app.asar",
@@ -160,8 +161,9 @@ function profileSourcesExist() {
 
 function guestPaths(runId) {
   const safeRunId = safeSegment(runId);
+  const tempRunId = crypto.createHash("sha256").update(runId).digest("hex").slice(0, 12);
   const disk = `${GUEST_DISK_ROOT}/${safeRunId}`;
-  const temp = `${GUEST_TMP_ROOT}/${safeRunId}`;
+  const temp = `${GUEST_TMP_ROOT}/${tempRunId}`;
   return {
     authCodex: `${temp}/source/.codex`,
     authUserData: `${temp}/source/.config/Codex`,
@@ -424,7 +426,7 @@ async function runAcceptance(options = {}) {
   async function runGuestSmoke(mode, app, reportName, timeoutMs) {
     const reportTarget = `${paths.reports}/${reportName}`;
     const args = [
-      "node", `${paths.scripts}/smoke-linux-desktop.js`,
+      app, `${paths.scripts}/smoke-linux-desktop.js`,
       "--mode", mode,
       "--platform", platform,
       "--app", app,
@@ -435,7 +437,7 @@ async function runAcceptance(options = {}) {
       "--source-user-data", paths.authUserData,
       "--temp-root", paths.tempWork,
     ].map(shellQuote).join(" ");
-    await runGuest(`${guestEnvironment()} ${args}`, `guest smoke: ${mode} (${reportName})`);
+    await runGuest(`${guestEnvironment()} ELECTRON_RUN_AS_NODE=1 ${args}`, `guest smoke: ${mode} (${reportName})`);
   }
 
   async function guestPackageIdentity(extractedRoot) {

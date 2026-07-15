@@ -7,6 +7,7 @@ const {
   appPathForPlatform,
   chromiumProxyServerForEnv,
   createLogMonitor,
+  createProfile,
   detectActivePlanMode,
   detectPlanMode,
   extractProposedPlan,
@@ -100,6 +101,19 @@ test("smoke forces Electron networking through the configured proxy", () => {
     () => chromiumProxyServerForEnv({ HTTPS_PROXY: "http://user:secret@127.0.0.1:7897" }),
     /cannot be exposed/,
   );
+});
+
+test("Electron-as-Node smoke driver launches the child as a desktop app", () => {
+  const previous = process.env.ELECTRON_RUN_AS_NODE;
+  process.env.ELECTRON_RUN_AS_NODE = "1";
+  const profile = createProfile("safe");
+  try {
+    assert.equal(profile.env.ELECTRON_RUN_AS_NODE, undefined);
+  } finally {
+    profile.cleanup();
+    if (previous == null) delete process.env.ELECTRON_RUN_AS_NODE;
+    else process.env.ELECTRON_RUN_AS_NODE = previous;
+  }
 });
 
 test("native picker discovery does not depend on the currently focused X11 window", () => {
@@ -213,7 +227,15 @@ test("VM acceptance contract requires isolation, baseline, evidence, and cleanup
   }
   assert.equal(failureClassForStage("vm-reset"), "infrastructure");
   assert.equal(failureClassForStage("installed-core-ui"), "product");
-  assert.match(guestPaths("run/id").temp, /^\/run\/user\/1000\/codex-acceptance\//);
+  assert.match(guestPaths("run/id").temp, /^\/run\/user\/1000\/ca\/[a-f0-9]{12}$/);
+});
+
+test("guest tmpfs paths leave room for Chromium Unix socket names", () => {
+  const first = guestPaths("2026-07-15T11-52-43-292Z-long-version-and-commit");
+  const second = guestPaths("2026-07-15T11-52-43-293Z-long-version-and-commit");
+  assert.ok(first.tempWork.length < 64, `temporary path is too long: ${first.tempWork}`);
+  assert.notEqual(first.temp, second.temp);
+  assert.match(first.disk, /long-version-and-commit/);
 });
 
 test("installed package identity parser preserves absolute file hashes", () => {
@@ -265,6 +287,7 @@ test("acceptance runner installs, rolls back, and cleans up only inside the VM",
   assert.match(runner, /installAttempted = true/);
   assert.match(runner, /vm\.resetVm\(\)/);
   assert.match(runner, /vm\.discardVm\(\)/);
+  assert.match(runner, /ELECTRON_RUN_AS_NODE=1/);
   assert.doesNotMatch(runner, /pkexec|function installCommand/);
   assert.match(runner, /--channel", "accepted"/);
 });

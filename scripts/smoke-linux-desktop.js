@@ -189,9 +189,11 @@ function createProfile(mode, options = {}) {
     if (process.env.CODEX_DESKTOP_SMOKE_REAL_PROFILE !== "1") {
       fail("real profile smoke requires CODEX_DESKTOP_SMOKE_REAL_PROFILE=1");
     }
+    const env = { ...process.env };
+    delete env.ELECTRON_RUN_AS_NODE;
     return {
       cleanup: () => {},
-      env: { ...process.env },
+      env,
       home: os.homedir(),
       root: null,
     };
@@ -204,6 +206,7 @@ function createProfile(mode, options = {}) {
     HOME: profile.home,
     XDG_CONFIG_HOME: path.join(profile.home, ".config"),
   };
+  delete env.ELECTRON_RUN_AS_NODE;
   if (chromiumProxyServerForEnv(env)) env.NODE_USE_ENV_PROXY = "1";
 
   let sourceFingerprints = {};
