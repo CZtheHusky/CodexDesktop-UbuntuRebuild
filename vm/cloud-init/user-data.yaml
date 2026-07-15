@@ -18,6 +18,8 @@ disable_root: true
 package_update: true
 package_upgrade: false
 
+__APT_CONFIG__
+
 packages:
   - at-spi2-core
   - curl
@@ -25,6 +27,7 @@ packages:
   - git
   - gnome-screenshot
   - jq
+  - nodejs
   - openssh-server
   - python3-pyatspi
   - qemu-guest-agent
@@ -35,8 +38,12 @@ packages:
   - xorg
 
 write_files:
-  - path: /home/codex-test/.config/autostart/update-notifier.desktop
-    owner: codex-test:codex-test
+  - path: /var/lib/codex-gui-baseline-version
+    permissions: "0644"
+    content: |
+      __BASELINE_SCHEMA_VERSION__
+
+  - path: /usr/local/share/codex-update-notifier.desktop
     permissions: "0644"
     content: |
       [Desktop Entry]
@@ -84,6 +91,7 @@ write_files:
 
 runcmd:
   - [mkdir, -p, /home/codex-test/.config]
+  - [install, -D, -o, codex-test, -g, codex-test, -m, "0644", /usr/local/share/codex-update-notifier.desktop, /home/codex-test/.config/autostart/update-notifier.desktop]
   - [touch, /home/codex-test/.config/gnome-initial-setup-done]
   - [chown, -R, "codex-test:codex-test", /home/codex-test/.config]
   - [dconf, update]

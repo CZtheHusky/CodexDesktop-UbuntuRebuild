@@ -29,9 +29,10 @@ as accepted.
 
 `npm run build:accepted` is the only release-quality entrypoint. It runs unit
 tests, builds the candidate, verifies the generated JavaScript and package,
-starts the unpacked candidate with an empty profile, installs the `.deb`, runs
-the authenticated core UI suite against `/usr/bin/codex-desktop`, and promotes
-the candidate only after every gate passes.
+resets the isolated VM, starts the candidate extracted from its `.deb` with an
+empty profile, installs it only in the guest, runs the authenticated core UI
+suite against the guest `/usr/bin/codex-desktop`, discards the guest, and
+promotes the candidate only after every gate passes.
 
 Accepted packages are stored under:
 
@@ -50,11 +51,12 @@ never launch against the live profile.
 
 - Source `$CODEX_HOME` or `~/.codex` and `$XDG_CONFIG_HOME/Codex` or
   `~/.config/Codex`.
-- Copy only authentication and startup configuration from Codex state. Exclude
-  logs, caches, session transcripts, SQLite state, locks, sockets, PID files,
-  temporary files, shell snapshots, process state, and attachments.
-- Copy the Electron profile while excluding caches, Crashpad, GPU data,
-  singleton files, logs, and DevTools state.
+- Require the host Codex process to be closed while the snapshot is created.
+- Copy only `.codex-global-state.json`, `auth.json`, and `installation_id` from
+  Codex state. Do not copy `config.toml`, logs, sessions, SQLite state, plugins,
+  Skills, MCP configuration, locks, sockets, attachments, or symlinks.
+- Copy only Cookies, Local State, Preferences, and Local Storage from the root
+  Electron profile and its `codex-browser-app` partition.
 - Set temporary `HOME`, `CODEX_HOME`, and `XDG_CONFIG_HOME` values and use
   private `0700` permissions.
 - If the parent environment defines a proxy, force the same endpoint through
@@ -62,21 +64,24 @@ never launch against the live profile.
   settings, and inheriting `HTTP_PROXY` alone does not cover `net.fetch`.
 - Never hard-link profile data. Never write credentials, cookies, tokens, or
   profile contents to logs, reports, screenshots metadata, or Git.
-- Delete the cloned profile after success or failure. `--keep-profile` is an
-  explicit local debugging exception and must never be used by the mandatory
-  acceptance command.
-- Verify that the source authentication files are unchanged after the run.
+- Stream the snapshot into guest `/run` tmpfs and delete the host temporary copy
+  immediately. `--keep-profile` must never be used by mandatory acceptance.
+- Verify that source authentication files do not change while taking the
+  snapshot. The host app may be reopened after the snapshot is complete.
 
 The functional suite creates a disposable Git workspace with deterministic
 text and image fixtures. All model tool calls and terminal commands must target
 that workspace. No test may edit the rebuild repository or the user's files.
 
 Installed GUI acceptance must run in the project-managed Ubuntu Desktop VM. Run
-`npm run vm:provision` once, then use `npm run vm:reset` before each acceptance
-run. The visible, git-ignored `vm-state/` directory contains the clean baseline,
-disposable working disk, VM-only SSH key, logs, and screenshots. The baseline
-must never contain host Codex authentication or profile data. Authentication is
-copied into the working VM only for a test run and removed by the next reset.
+`npm run vm:provision` once, or `npm run vm:reprovision` after the tracked VM
+schema changes. The visible, git-ignored `vm-state/` directory contains the
+versioned clean baseline, disposable working disk, VM-only SSH key, logs, and
+screenshots. A stale baseline is a blocking failure. The baseline must never
+contain host Codex authentication, profile data, or an installed Codex package.
+Normal acceptance reuses the read-only baseline: `vm:reset` and `vm:discard`
+replace only the small qcow2 overlay. Do not reprovision the operating system on
+every run.
 
 The host requires KVM/QEMU, `qemu-img`, `cloud-localds`, OpenSSH, and access to
 `/dev/kvm`; `remote-viewer` is optional. VM lifecycle commands run as the normal
@@ -95,11 +100,14 @@ Each VM start establishes an SSH reverse tunnel from guest
 `127.0.0.1:7897` to host `127.0.0.1:7897` and verifies the proxy egress before
 declaring the VM ready. Clash remains bound to host loopback and is never
 exposed to the LAN. App tests inside the VM use the guest loopback endpoint.
+Provisioning also configures snapd through that tunnel before waiting for
+cloud-init. `CODEX_VM_APT_MIRROR` may specify an unauthenticated HTTP(S) Ubuntu
+mirror for the one-time baseline build; it is not needed for routine resets.
 
-The VM manager currently provides the isolated desktop and reset boundary. The
-installed-app runner is not yet wired through it, so `build:accepted` must not
-be reported as VM-isolated until that integration and its regression tests are
-complete.
+`build:accepted` may build and inspect files on the host, but it must not invoke
+host `apt`, `sudo`, `pkexec`, or the host-installed Codex executable. A missing
+VM prerequisite is a failure; the mandatory flow never falls back to the host
+desktop.
 
 ## 4. Required Acceptance Gates
 
@@ -148,29 +156,31 @@ suite above.
 
 ## 5. Installation, Rollback, And Evidence
 
-Before installation, acceptance must locate a `.deb` for the currently
-installed accepted version. If no rollback artifact exists, installation is
-blocked.
+Before installation, acceptance must locate the same-version accepted `.deb`,
+or otherwise the most recently accepted x64 `.deb`, in build history. The host
+installed version is not used as the rollback source. If no rollback artifact
+exists, installation is blocked.
 
-Install the candidate with privileged `apt install --reinstall`. If
-installation or the installed-app UI suite fails after replacement, reinstall
-the rollback package and verify that it can complete the empty-profile startup
-gate. A rollback failure must be reported explicitly.
+Install the accepted baseline in the guest first and require both empty-profile
+startup and an authenticated real marker response. Then install the candidate
+with guest `sudo -n apt-get install --reinstall` and verify hashes for the main
+binary, `app.asar`, and bundled CLI. If installation or core UI fails, reinstall
+the rollback package and repeat both baseline probes.
 
-The runner uses an existing non-interactive `sudo` credential when available;
-otherwise an X11 desktop session uses `pkexec` for the system authentication
-dialog. Credentials must never be passed through command arguments or logs.
+Passwordless sudo exists only for the disposable VM account. The host Codex
+package and executable hashes must be unchanged before and after acceptance.
 
 Each run writes a local, ignored report under
 `build-history/acceptance-runs/<run-id>/`. The report records the app/build/CLI
-versions, Git branch and commit, package SHA-256, installed versions, stage and
-scenario durations, pass/fail status, redacted logs, screenshots, and rollback
-result. It must not contain copied profile data.
+versions, Git branch and commit, VM/image identity, package and installed-file
+hashes, stage and scenario durations, failure class, redacted logs, screenshots,
+and rollback result. Evidence is scanned against in-memory authentication values
+and must not contain copied profile data.
 
-On failure, preserve the candidate and report, do not promote the build, and
-add or tighten an automated regression check before claiming a fix. Do not
-hide transient failures with automatic retries; an explicit rerun keeps both
-results.
+On failure, preserve the candidate and report, do not promote the build, collect
+guest evidence, then run `vm:discard`. Classify the result as product,
+infrastructure, or interrupted. Do not hide transient failures with automatic
+retries; an explicit rerun keeps both results.
 
 An adaptation is accepted only when all required checks pass, no required
 scenario is skipped, the installed version is correct, the source profile is

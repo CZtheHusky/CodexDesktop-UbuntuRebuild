@@ -6,54 +6,26 @@
  * the login/profile data into a temporary HOME so the app can pass real UI
  * gates without requiring a fresh login.
  */
-const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
 const net = require("net");
 const os = require("os");
 const path = require("path");
 const { execFileSync, spawn } = require("child_process");
+const {
+  assertProfileSourcesUnchanged,
+  copyDirIfPresent,
+  createTempRoot,
+  fingerprintProfileSources,
+  shouldCopyProfilePath,
+  sourcePaths,
+} = require("./acceptance-profile");
 
 const PROJECT_ROOT = path.join(__dirname, "..");
-const VALID_MODES = new Set(["safe", "auth-clone", "core", "plan-flow", "real"]);
+const VALID_MODES = new Set(["safe", "auth-clone", "auth-probe", "core", "plan-flow", "real"]);
 const VALID_PLATFORMS = new Set(["linux-x64", "linux-arm64"]);
 const DEFAULT_TIMEOUT_MS = 90_000;
 const LOG_LIMIT = 256 * 1024;
-
-const PROFILE_SKIP_NAMES = new Set([
-  "Cache",
-  "Code Cache",
-  "Crashpad",
-  "DawnCache",
-  "DawnGraphiteCache",
-  "DawnWebGPUCache",
-  "DevToolsActivePort",
-  "GPUCache",
-  "ShaderCache",
-  "SingletonCookie",
-  "SingletonLock",
-  "SingletonSocket",
-  "TransportSecurity",
-  ".tmp",
-  "app-server-control",
-  "app-server-daemon",
-  "archived_sessions",
-  "logs",
-  "log",
-  "process_manager",
-  "sessions",
-  "shell_snapshots",
-]);
-
-const CODEX_PROFILE_ALLOW_NAMES = new Set([
-  ".codex-global-state.json",
-  ".personality_migration",
-  "auth.json",
-  "config.toml",
-  "installation_id",
-  "models_cache.json",
-  "version.json",
-]);
 
 function argValue(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -203,55 +175,8 @@ function createLogMonitor() {
   return { assertNoFatal, includes, push, text };
 }
 
-function sha256File(file) {
-  const hash = crypto.createHash("sha256");
-  hash.update(fs.readFileSync(file));
-  return hash.digest("hex");
-}
-
-function shouldCopyProfilePath(source, options = {}) {
-  const base = path.basename(source);
-  if (PROFILE_SKIP_NAMES.has(base)) return false;
-  if (/\.(?:lock|log|pid|sock|socket|sqlite(?:-shm|-wal)?)$/i.test(base)) return false;
-  if (/^\.org\.chromium\.Chromium\./.test(base)) return false;
-
-  if (options.kind === "codex" && options.root) {
-    const relative = path.relative(options.root, source);
-    if (!relative) return true;
-    if (relative.includes(path.sep)) return false;
-    return CODEX_PROFILE_ALLOW_NAMES.has(relative);
-  }
-  return true;
-}
-
-function copyDirIfPresent(source, destination, kind = "desktop") {
-  if (!fs.existsSync(source)) return false;
-  fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
-  fs.cpSync(source, destination, {
-    recursive: true,
-    dereference: false,
-    filter: (file) => shouldCopyProfilePath(file, { kind, root: source }),
-  });
-  return true;
-}
-
-function fingerprintProfileSources(paths) {
-  const fingerprints = {};
-  for (const file of paths) {
-    if (fs.existsSync(file) && fs.statSync(file).isFile()) fingerprints[file] = sha256File(file);
-  }
-  return fingerprints;
-}
-
-function assertProfileSourcesUnchanged(fingerprints) {
-  for (const [file, before] of Object.entries(fingerprints)) {
-    if (!fs.existsSync(file)) fail(`source profile file disappeared during smoke test: ${file}`);
-    if (sha256File(file) !== before) fail(`source profile file changed during smoke test: ${file}`);
-  }
-}
-
-function createTempHome(prefix) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+function createTempHome(prefix, tempRoot = os.tmpdir()) {
+  const root = createTempRoot(prefix, tempRoot);
   const home = path.join(root, "home");
   fs.mkdirSync(path.join(home, ".config"), { recursive: true, mode: 0o700 });
   fs.chmodSync(root, 0o700);
@@ -272,7 +197,7 @@ function createProfile(mode, options = {}) {
     };
   }
 
-  const profile = createTempHome(`codex-desktop-smoke-${mode}-`);
+  const profile = createTempHome(`codex-desktop-smoke-${mode}-`, options.tempRoot);
   const env = {
     ...process.env,
     CODEX_HOME: path.join(profile.home, ".codex"),
@@ -282,11 +207,8 @@ function createProfile(mode, options = {}) {
   if (chromiumProxyServerForEnv(env)) env.NODE_USE_ENV_PROXY = "1";
 
   let sourceFingerprints = {};
-  if (mode === "auth-clone" || mode === "core" || mode === "plan-flow") {
-    const realHome = os.homedir();
-    const sourceCodex = process.env.CODEX_HOME || path.join(realHome, ".codex");
-    const sourceConfigRoot = process.env.XDG_CONFIG_HOME || path.join(realHome, ".config");
-    const sourceUserData = path.join(sourceConfigRoot, "Codex");
+  if (mode === "auth-clone" || mode === "auth-probe" || mode === "core" || mode === "plan-flow") {
+    const { codexHome: sourceCodex, userData: sourceUserData } = sourcePaths(options);
     sourceFingerprints = fingerprintProfileSources([
       path.join(sourceCodex, "auth.json"),
       path.join(sourceCodex, "config.toml"),
@@ -319,9 +241,9 @@ function createProfile(mode, options = {}) {
   };
 }
 
-function createTestWorkspace() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-desktop-acceptance-workspace-"));
-  const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-desktop-acceptance-external-"));
+function createTestWorkspace(tempRoot = os.tmpdir()) {
+  const root = createTempRoot("codex-desktop-acceptance-workspace-", tempRoot);
+  const externalRoot = createTempRoot("codex-desktop-acceptance-external-", tempRoot);
   fs.chmodSync(root, 0o700);
   fs.chmodSync(externalRoot, 0o700);
   fs.writeFileSync(path.join(root, "seed.txt"), "seed-content\n", "utf8");
@@ -1458,8 +1380,13 @@ async function runSmoke(options) {
 
   const timeoutMs = options.timeoutMs || (mode === "core" ? 15 * 60_000 : DEFAULT_TIMEOUT_MS);
   const deadline = deadlineFromNow(timeoutMs);
-  const profile = createProfile(mode, { keepProfile: options.keepProfile });
-  const workspace = mode === "core" ? createTestWorkspace() : null;
+  const profile = createProfile(mode, {
+    keepProfile: options.keepProfile,
+    sourceCodexHome: options.sourceCodexHome,
+    sourceUserData: options.sourceUserData,
+    tempRoot: options.tempRoot,
+  });
+  const workspace = mode === "core" ? createTestWorkspace(options.tempRoot) : null;
   const reportDir = options.reportDir ? path.resolve(options.reportDir) : null;
   const report = {
     appPath,
@@ -1562,8 +1489,14 @@ async function runSmoke(options) {
     await runStep("startup", async () => {
       current = await launch();
     });
-    await runStep("core-ui", () => exerciseCoreUi(current.cdp, mode));
+    await runStep("core-ui", async () => {
+      if (mode !== "auth-probe") return exerciseCoreUi(current.cdp, mode);
+      const snapshot = await waitForUiSnapshot(current.cdp, mode, deadlineFromNow(30_000));
+      if (!snapshot) fail("authenticated probe UI snapshot was unavailable");
+      assertCoreUi(snapshot, mode);
+    });
 
+    if (mode === "auth-probe") await runStep("normal-chat", () => exerciseNormalChat(current.cdp, deadline));
     if (mode === "plan-flow") await runStep("plan-flow", () => exercisePlanFlow(current.cdp, deadline));
     if (mode === "core") {
       const { persistenceMarker } = await exerciseCoreFlow(current.cdp, workspace, deadline, runStep);
@@ -1625,6 +1558,9 @@ async function main() {
     port: Number(argValue("--port", "0")) || null,
     reportDir: argValue("--report-dir", null),
     runId: argValue("--run-id", null),
+    sourceCodexHome: argValue("--source-codex-home", null),
+    sourceUserData: argValue("--source-user-data", null),
+    tempRoot: argValue("--temp-root", null),
     timeoutMs: timeoutArg == null ? null : Number(timeoutArg),
   });
 }

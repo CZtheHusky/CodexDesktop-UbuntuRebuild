@@ -5,7 +5,15 @@ const path = require("node:path");
 const test = require("node:test");
 
 const root = path.join(__dirname, "..");
-const { qemuArgs, ppmHasVisibleContent, proxyTunnelArgs, sshArgs } = require("./gui-vm");
+const {
+  BASELINE_SCHEMA_VERSION,
+  expectedBaselineIdentity,
+  qemuArgs,
+  ppmHasVisibleContent,
+  proxyTunnelArgs,
+  scpArgs,
+  sshArgs,
+} = require("./gui-vm");
 
 test("VM networking and display stay loopback-only to isolate acceptance", () => {
   const args = qemuArgs("/tmp/working.qcow2").join(" ");
@@ -24,11 +32,20 @@ test("cloud-init creates an unlocked Xorg desktop without host credentials", () 
   assert.match(source, /WaylandEnable=false/);
   assert.match(source, /lock-enabled=false/);
   assert.match(source, /python3-pyatspi/);
+  assert.match(source, /nodejs/);
   assert.match(source, /update-notifier\.desktop/);
   assert.match(source, /Hidden=true/);
   assert.match(source, /__SSH_PUBLIC_KEY__/);
+  assert.match(source, /__BASELINE_SCHEMA_VERSION__/);
   assert.doesNotMatch(source, /\.codex|auth\.json|CODEX_HOME/);
   assert.doesNotMatch(source, /10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+/);
+});
+
+test("VM baseline identity changes with its versioned cloud-init input", () => {
+  const identity = expectedBaselineIdentity();
+  assert.equal(identity.schemaVersion, BASELINE_SCHEMA_VERSION);
+  assert.match(identity.cloudImageSha256, /^[a-f0-9]{64}$/);
+  assert.match(identity.cloudInitSha256, /^[a-f0-9]{64}$/);
 });
 
 test("VM SSH ignores unrelated host agent keys", () => {
@@ -37,11 +54,26 @@ test("VM SSH ignores unrelated host agent keys", () => {
   assert.ok(args.includes("BatchMode=yes"));
 });
 
+test("VM file transfer uses the same isolated SSH identity", () => {
+  const args = scpArgs();
+  assert.ok(args.includes("IdentitiesOnly=yes"));
+  assert.ok(args.includes("BatchMode=yes"));
+  assert.ok(args.includes("22222"));
+});
+
 test("Clash reaches the guest only through a loopback reverse tunnel", () => {
   const args = proxyTunnelArgs().join(" ");
   assert.match(args, /-R 127\.0\.0\.1:7897:127\.0\.0\.1:7897/);
   assert.match(args, /ExitOnForwardFailure=yes/);
   assert.doesNotMatch(args, /0\.0\.0\.0:7897/);
+});
+
+test("baseline provisioning configures snapd before waiting for cloud-init packages", () => {
+  const source = fs.readFileSync(path.join(root, "scripts", "gui-vm.js"), "utf8");
+  const snapProxy = source.indexOf("sudo snap set system proxy.http=");
+  const cloudInitWait = source.indexOf("sudo cloud-init status --wait --long");
+  assert.ok(snapProxy >= 0, "snap proxy configuration is missing");
+  assert.ok(cloudInitWait > snapProxy, "snap proxy must be configured before cloud-init package installation waits");
 });
 
 test("screenshot validation rejects blank and QXL-corrupted displays", () => {

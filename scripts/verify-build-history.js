@@ -22,10 +22,19 @@ const REQUIRED_ACCEPTANCE_STAGES = [
   "candidate-build",
   "generated-syntax",
   "candidate-history",
+  "vm-reset",
+  "auth-snapshot",
+  "vm-stage",
+  "guest-preflight",
   "candidate-empty-profile",
+  "accepted-baseline",
   "install-candidate",
   "installed-core-ui",
+  "vm-evidence",
+  "evidence-redaction",
+  "vm-cleanup",
 ];
+const REQUIRED_AUTH_PROBE_STEPS = ["startup", "core-ui", "normal-chat"];
 const REQUIRED_CORE_STEPS = [
   "startup",
   "core-ui",
@@ -169,6 +178,17 @@ function verify(options) {
     if (!reportPath || !fs.existsSync(reportPath)) fail("accepted history is missing its acceptance report");
     const report = readJson(reportPath);
     if (report.status !== "passed") fail("accepted history references a non-passing report");
+    if (report.schemaVersion !== 2) fail("accepted history requires a schema v2 VM acceptance report");
+    if (report.failureClass != null) fail("passing accepted report unexpectedly has a failure class");
+    if (report.execution?.kind !== "kvm-vm" || report.execution?.guestArch !== "x86_64") {
+      fail("accepted report does not identify the required x64 KVM execution environment");
+    }
+    if (report.authentication?.storage !== "guest-tmpfs" || !report.authentication?.sourceUnchanged) {
+      fail("accepted report does not confirm isolated authentication handling");
+    }
+    if (JSON.stringify(report.host?.installBefore) !== JSON.stringify(report.host?.installAfter)) {
+      fail("accepted report does not confirm that the host Codex installation was unchanged");
+    }
     if (report.git?.commit !== manifest.git.commit) fail("accepted report commit does not match history manifest");
     if (
       report.app?.version !== manifest.version ||
@@ -183,7 +203,23 @@ function verify(options) {
     if (report.install?.afterVersion !== manifest.version) {
       fail("accepted report does not confirm the installed candidate version");
     }
+    if (!report.install?.rollbackSha256 || !report.install?.candidateIdentity?.["usr/lib/codex-desktop/resources/app.asar"]) {
+      fail("accepted report is missing rollback or installed candidate identity");
+    }
     assertRequiredPassed(report.stages, REQUIRED_ACCEPTANCE_STAGES, "acceptance stages");
+
+    for (const name of ["candidate-smoke", "accepted-safe"]) {
+      const smokePath = path.join(path.dirname(reportPath), name, "smoke-report.json");
+      if (!fs.existsSync(smokePath) || readJson(smokePath).status !== "passed") {
+        fail(`accepted history is missing passing ${name} evidence`);
+      }
+    }
+
+    const probePath = path.join(path.dirname(reportPath), "accepted-auth-probe", "smoke-report.json");
+    if (!fs.existsSync(probePath)) fail("accepted history is missing the accepted baseline auth probe");
+    const probeReport = readJson(probePath);
+    if (probeReport.status !== "passed") fail("accepted baseline auth probe did not pass");
+    assertRequiredPassed(probeReport.steps, REQUIRED_AUTH_PROBE_STEPS, "accepted auth probe scenarios");
 
     const coreReportPath = path.join(path.dirname(reportPath), "installed-core", "smoke-report.json");
     if (!fs.existsSync(coreReportPath)) fail("accepted history is missing the installed core UI report");
@@ -218,6 +254,7 @@ if (require.main === module) {
 module.exports = {
   ACCEPTED_ROOT,
   CANDIDATE_ROOT,
+  REQUIRED_AUTH_PROBE_STEPS,
   REQUIRED_ACCEPTANCE_STAGES,
   REQUIRED_CORE_STEPS,
   archDirFor,
