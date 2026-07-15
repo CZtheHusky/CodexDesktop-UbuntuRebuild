@@ -76,6 +76,54 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function parseX11Windows(output) {
+  return String(output)
+    .split(/\r?\n/)
+    .map((line) => line.match(/^(0x[0-9a-f]+)\s+\S+\s+(\d+)\s+(\S+)\s+\S+\s+(.*)$/i))
+    .filter(Boolean)
+    .map((match) => ({ className: match[3], id: match[1], pid: Number(match[2]), title: match[4] }));
+}
+
+function listX11Windows() {
+  try {
+    return parseX11Windows(execFileSync("wmctrl", ["-lxp"], { encoding: "utf8", timeout: 2000 }));
+  } catch {
+    fail("native file picker automation requires wmctrl in an X11 desktop session");
+  }
+}
+
+async function chooseFileInNativeDialog(file, existingWindowIds) {
+  if (!process.env.DISPLAY) fail("native file picker automation requires an X11 DISPLAY");
+  let dialog = null;
+  const openDeadline = deadlineFromNow(10_000);
+  while (Date.now() <= openDeadline) {
+    const added = listX11Windows().filter((window) => !existingWindowIds.has(window.id));
+    dialog = added.find((window) => /(^|\.)codex($|\.)/i.test(window.className)) ?? (added.length === 1 ? added[0] : null);
+    if (dialog) break;
+    await sleep(200);
+  }
+  if (!dialog) fail("native file picker window did not appear");
+
+  const decimalWindowId = String(Number.parseInt(dialog.id, 16));
+  execFileSync("xdotool", ["windowactivate", "--sync", decimalWindowId]);
+  execFileSync("xdotool", ["key", "--clearmodifiers", "ctrl+l"]);
+  await sleep(200);
+  execFileSync("xdotool", ["type", "--clearmodifiers", "--delay", "1", "--", file]);
+  execFileSync("xdotool", ["key", "--clearmodifiers", "Return"]);
+  await sleep(500);
+  if (listX11Windows().some((window) => window.id === dialog.id)) {
+    execFileSync("xdotool", ["windowactivate", "--sync", decimalWindowId]);
+    execFileSync("xdotool", ["key", "--clearmodifiers", "Return"]);
+  }
+
+  const closeDeadline = deadlineFromNow(10_000);
+  while (Date.now() <= closeDeadline) {
+    if (!listX11Windows().some((window) => window.id === dialog.id)) return;
+    await sleep(200);
+  }
+  fail("native file picker did not close after selecting the fixture");
+}
+
 function deadlineFromNow(timeoutMs) {
   return Date.now() + timeoutMs;
 }
@@ -90,6 +138,25 @@ function platformOutDir(platform) {
 
 function appPathForPlatform(platform) {
   return path.join(PROJECT_ROOT, "out", platformOutDir(platform), "Codex");
+}
+
+function chromiumProxyServerForEnv(env) {
+  const raw = env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy || env.ALL_PROXY || env.all_proxy;
+  if (!raw) return null;
+
+  let proxy;
+  try {
+    proxy = new URL(raw);
+  } catch {
+    fail("Configured proxy URL is invalid");
+  }
+  if (proxy.username || proxy.password) fail("Authenticated proxy URLs cannot be exposed through Electron arguments");
+
+  const protocol = proxy.protocol === "socks5h:" ? "socks5:" : proxy.protocol;
+  if (!["http:", "https:", "socks:", "socks5:"].includes(protocol)) {
+    fail(`Unsupported Electron proxy protocol ${proxy.protocol}`);
+  }
+  return `${protocol}//${proxy.host}`;
 }
 
 function redactLog(text) {
@@ -212,6 +279,7 @@ function createProfile(mode, options = {}) {
     HOME: profile.home,
     XDG_CONFIG_HOME: path.join(profile.home, ".config"),
   };
+  if (chromiumProxyServerForEnv(env)) env.NODE_USE_ENV_PROXY = "1";
 
   let sourceFingerprints = {};
   if (mode === "auth-clone" || mode === "core" || mode === "plan-flow") {
@@ -425,7 +493,7 @@ async function stopProcess(child) {
 
 function snapshotExpression() {
   return `(() => {
-    const controls = [...document.querySelectorAll("button,[role=button],textarea,input,[contenteditable=true]")].map((el, index) => ({
+    const controls = [...document.querySelectorAll("button,[role=button],[role=menuitem],[role=option],textarea,input,[contenteditable=true]")].map((el, index) => ({
       aria: el.getAttribute("aria-label") || "",
       ariaPressed: el.getAttribute("aria-pressed") || "",
       ariaSelected: el.getAttribute("aria-selected") || "",
@@ -621,7 +689,7 @@ async function pressEscape(cdp) {
 async function clickFirst(cdp, patternSource, flags = "i") {
   return cdp.evaluate(`(() => {
     const pattern = new RegExp(${JSON.stringify(patternSource)}, ${JSON.stringify(flags)});
-    const controls = [...document.querySelectorAll("button,[role=button]")];
+    const controls = [...document.querySelectorAll("button,[role=button],[role=menuitem],[role=option]")];
     const target = controls.find((el) => {
       const rect = el.getBoundingClientRect();
       const style = window.getComputedStyle(el);
@@ -633,6 +701,40 @@ async function clickFirst(cdp, patternSource, flags = "i") {
     target.click();
     return true;
   })()`);
+}
+
+async function pointerClickFirst(cdp, patternSource, flags = "i") {
+  const point = await cdp.evaluate(`(() => {
+    const pattern = new RegExp(${JSON.stringify(patternSource)}, ${JSON.stringify(flags)});
+    const controls = [...document.querySelectorAll("button,[role=button],[role=menuitem],[role=option]")];
+    const target = controls.find((el) => {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      const visible = rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+      const enabled = !el.disabled && el.getAttribute("aria-disabled") !== "true";
+      return visible && enabled && pattern.test([el.getAttribute("aria-label"), el.getAttribute("title"), el.innerText].filter(Boolean).join("\\n"));
+    });
+    if (!target) return null;
+    const rect = target.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  if (!point) return false;
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+  await cdp.send("Input.dispatchMouseEvent", {
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+    type: "mousePressed",
+    ...point,
+  });
+  await cdp.send("Input.dispatchMouseEvent", {
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+    type: "mouseReleased",
+    ...point,
+  });
+  return true;
 }
 
 function composerEditorScript(body) {
@@ -768,14 +870,28 @@ async function setFileInputFiles(cdp, files) {
     });
   }
 
+  const existingWindowIds = new Set(listX11Windows().map((window) => window.id));
   let result = await fileInputs();
   if (result.nodeIds.length === 0) {
-    const opened = await clickFirst(cdp, "attach|add files|add photos|附件|添加文件|添加照片|檔案|照片");
+    const opened = await pointerClickFirst(
+      cdp,
+      "attach|add files|add photos|附件|添加文件|添加照片|檔案|照片",
+    );
     if (!opened) fail("attachment control was not found");
     await sleep(500);
     result = await fileInputs();
   }
-  if (result.nodeIds.length === 0) fail("attachment file input was not found");
+  if (result.nodeIds.length === 0) {
+    const selected = await pointerClickFirst(cdp, "files and folders|文件和文件夹|檔案和資料夾");
+    if (!selected) fail("files and folders attachment action was not found");
+    await sleep(500);
+    result = await fileInputs();
+  }
+  if (result.nodeIds.length === 0) {
+    if (files.length !== 1) fail("native file picker automation selects one fixture at a time");
+    await chooseFileInNativeDialog(files[0], existingWindowIds);
+    return;
+  }
   await cdp.send("DOM.setFileInputFiles", {
     files,
     nodeId: result.nodeIds.at(-1),
@@ -852,7 +968,14 @@ async function exerciseAttachments(cdp, workspace, deadline) {
   await openNewThread(cdp);
   const textFile = path.join(workspace.root, "attachment.txt");
   const imageFile = path.join(workspace.root, "fixture.png");
-  await setFileInputFiles(cdp, [textFile, imageFile]);
+  await setFileInputFiles(cdp, [textFile]);
+  await waitForSnapshot(
+    cdp,
+    deadlineFromNow(10_000),
+    "text attachment chip",
+    (snapshot) => snapshotHaystack(snapshot).includes("attachment.txt"),
+  );
+  await setFileInputFiles(cdp, [imageFile]);
   await waitForSnapshot(
     cdp,
     deadlineFromNow(10_000),
@@ -1040,6 +1163,59 @@ async function exerciseMenu(cdp, patternSource, label) {
   const clicked = await clickFirst(cdp, patternSource);
   if (!clicked) fail(`${label} control was not found`);
   await sleep(250);
+  await pressEscape(cdp);
+}
+
+async function exerciseSettings(cdp) {
+  await dispatchKey(cdp, ",", "Comma", 188, 2);
+  for (let i = 0; i < 8; i += 1) {
+    await sleep(250);
+    const snapshot = await cdp.evaluate(snapshotExpression());
+    if (/settings|设置|設定|general|常规|一般|appearance|外观|外觀/i.test(snapshot.bodyText)) {
+      await pressEscape(cdp);
+      return;
+    }
+  }
+
+  let opened = await pointerClickFirst(cdp, "settings|设置|設定");
+  if (!opened) {
+    opened = await pointerClickFirst(cdp, "profile|account|个人资料|個人資料|账户|帳戶|打开个人|開啟個人");
+  }
+  if (!opened) {
+    const snapshot = await cdp.evaluate(snapshotExpression());
+    fail(`profile/settings menu control was not found${formatSnapshotForFailure(snapshot)}`);
+  }
+  await sleep(300);
+  if (!(await pointerClickFirst(cdp, "settings|设置|設定"))) {
+    const snapshot = await cdp.evaluate(snapshotExpression());
+    fail(`settings action was not found in the profile menu${formatSnapshotForFailure(snapshot)}`);
+  }
+  await sleep(500);
+  const snapshot = await cdp.evaluate(snapshotExpression());
+  if (!/settings|设置|設定/i.test(snapshot.bodyText)) fail("settings surface did not open");
+  await pressEscape(cdp);
+}
+
+async function exerciseModelPicker(cdp) {
+  const pickerPattern = "select model|model picker|model|\\b\\d+\\.\\d+\\b|sol|选择模型|模型|選擇模型";
+  if (!(await pointerClickFirst(cdp, pickerPattern))) fail("model picker control was not found");
+  const snapshot = await waitForSnapshot(
+    cdp,
+    deadlineFromNow(5_000),
+    "model picker menu",
+    (value) => /model|模型/i.test(snapshotHaystack(value)) && /speed|速度/i.test(snapshotHaystack(value)),
+  );
+  if (!/reasoning|effort|推理|思考|low|medium|high|低|中|高|极高|極高/i.test(snapshotHaystack(snapshot))) {
+    fail(`reasoning effort control was not found in the model picker${formatSnapshotForFailure(snapshot)}`);
+  }
+  if (!(await pointerClickFirst(cdp, "speed|速度"))) fail("speed control was not found in the model picker");
+  await waitForSnapshot(
+    cdp,
+    deadlineFromNow(5_000),
+    "Fast mode option",
+    (value) => /fast|快速/i.test(snapshotHaystack(value)),
+  );
+  await pressEscape(cdp);
   await pressEscape(cdp);
 }
 
@@ -1240,17 +1416,14 @@ async function exerciseCoreUi(cdp, mode) {
   await exerciseMenu(cdp, "approval|approve|审批|審批|替我审批", "approval menu");
 
   if (mode === "core") {
-    await exerciseMenu(cdp, "settings|设置|設定", "settings");
-    await exerciseMenu(
+    await exerciseSettings(cdp);
+    await waitForControl(
       cdp,
-      "select model|model picker|model|\\b\\d+\\.\\d+\\b|sol|选择模型|模型|選擇模型",
-      "model picker",
+      /select model|model picker|model|\b\d+\.\d+\b|sol|选择模型|模型|選擇模型/i,
+      deadlineFromNow(10_000),
+      "model picker after closing settings",
     );
-    const controls = await cdp.evaluate(snapshotExpression());
-    if (!hasControl(controls, /fast|快速|enable now|立即启用|立即啟用/i)) fail("Fast mode control was not found");
-    if (!hasControl(controls, /reasoning|effort|推理|思考|low|medium|high|低|中|高/i)) {
-      fail("reasoning effort control was not found");
-    }
+    await exerciseModelPicker(cdp);
   }
 
   if (mode !== "real" && mode !== "core") {
@@ -1311,6 +1484,8 @@ async function runSmoke(options) {
     try {
       console.log(`-- smoke-linux-desktop: ${mode} (${platform}, port ${port})`);
       const args = ["--no-sandbox", "--password-store=basic", `--remote-debugging-port=${port}`];
+      const proxyServer = chromiumProxyServerForEnv(profile.env);
+      if (proxyServer) args.push(`--proxy-server=${proxyServer}`);
       if (workspace) args.push("--open-project", workspace.root);
       child = spawn(appPath, args, {
         cwd: workspace?.root || PROJECT_ROOT,
@@ -1463,6 +1638,7 @@ if (require.main === module) {
 
 module.exports = {
   appPathForPlatform,
+  chromiumProxyServerForEnv,
   controlHaystack,
   createLogMonitor,
   createProfile,
@@ -1473,6 +1649,7 @@ module.exports = {
   formatSnapshotForFailure,
   fingerprintProfileSources,
   occurrenceCount,
+  parseX11Windows,
   redactLog,
   runSmoke,
   shouldCopyProfilePath,

@@ -5,11 +5,13 @@ const test = require("node:test");
 
 const {
   appPathForPlatform,
+  chromiumProxyServerForEnv,
   createLogMonitor,
   detectActivePlanMode,
   detectPlanMode,
   extractProposedPlan,
   occurrenceCount,
+  parseX11Windows,
   redactLog,
   shouldCopyProfilePath,
 } = require("./smoke-linux-desktop");
@@ -38,6 +40,29 @@ test("authenticated smoke copies only required Codex root files", () => {
   assert.equal(shouldCopyProfilePath(`${root}/state_5.sqlite`, { kind: "codex", root }), false);
   assert.equal(shouldCopyProfilePath(`${root}/history.jsonl`, { kind: "codex", root }), false);
   assert.equal(shouldCopyProfilePath(`${root}/archived_sessions`, { kind: "codex", root }), false);
+});
+
+test("smoke forces Electron networking through the configured proxy", () => {
+  assert.equal(
+    chromiumProxyServerForEnv({ HTTPS_PROXY: "http://127.0.0.1:7897" }),
+    "http://127.0.0.1:7897",
+  );
+  assert.equal(
+    chromiumProxyServerForEnv({ ALL_PROXY: "socks5h://127.0.0.1:7897" }),
+    "socks5://127.0.0.1:7897",
+  );
+  assert.equal(chromiumProxyServerForEnv({}), null);
+  assert.throws(
+    () => chromiumProxyServerForEnv({ HTTPS_PROXY: "http://user:secret@127.0.0.1:7897" }),
+    /cannot be exposed/,
+  );
+});
+
+test("native picker discovery does not depend on the currently focused X11 window", () => {
+  assert.deepEqual(
+    parseX11Windows("0x04e00004  0 327008 codex.codex host Codex\n"),
+    [{ className: "codex.codex", id: "0x04e00004", pid: 327008, title: "Codex" }],
+  );
 });
 
 test("smoke log monitor treats startup syntax errors as fatal", () => {

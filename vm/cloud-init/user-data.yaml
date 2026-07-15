@@ -1,0 +1,94 @@
+#cloud-config
+hostname: codex-gui-acceptance
+manage_etc_hosts: true
+
+users:
+  - default
+  - name: codex-test
+    gecos: Codex GUI Acceptance
+    groups: [adm, sudo]
+    shell: /bin/bash
+    lock_passwd: true
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - __SSH_PUBLIC_KEY__
+
+ssh_pwauth: false
+disable_root: true
+package_update: true
+package_upgrade: false
+
+packages:
+  - at-spi2-core
+  - curl
+  - dbus-x11
+  - git
+  - gnome-screenshot
+  - jq
+  - openssh-server
+  - python3-pyatspi
+  - qemu-guest-agent
+  - ubuntu-desktop-minimal
+  - wmctrl
+  - x11-utils
+  - xdotool
+  - xorg
+
+write_files:
+  - path: /home/codex-test/.config/autostart/update-notifier.desktop
+    owner: codex-test:codex-test
+    permissions: "0644"
+    content: |
+      [Desktop Entry]
+      Type=Application
+      Name=Update Notifier
+      Hidden=true
+
+  - path: /etc/gdm3/custom.conf
+    permissions: "0644"
+    content: |
+      [daemon]
+      AutomaticLoginEnable=True
+      AutomaticLogin=codex-test
+      WaylandEnable=false
+
+      [security]
+
+      [xdmcp]
+
+      [chooser]
+
+      [debug]
+
+  - path: /etc/dconf/profile/user
+    permissions: "0644"
+    content: |
+      user-db:user
+      system-db:local
+
+  - path: /etc/dconf/db/local.d/00-codex-acceptance
+    permissions: "0644"
+    content: |
+      [org/gnome/desktop/session]
+      idle-delay=uint32 0
+
+      [org/gnome/desktop/screensaver]
+      lock-enabled=false
+
+      [org/gnome/settings-daemon/plugins/power]
+      sleep-inactive-ac-type='nothing'
+      sleep-inactive-battery-type='nothing'
+
+      [org/gnome/shell]
+      welcome-dialog-last-shown-version='999'
+
+runcmd:
+  - [mkdir, -p, /home/codex-test/.config]
+  - [touch, /home/codex-test/.config/gnome-initial-setup-done]
+  - [chown, -R, "codex-test:codex-test", /home/codex-test/.config]
+  - [dconf, update]
+  - [systemctl, set-default, graphical.target]
+  - [systemctl, enable, ssh]
+  - [systemctl, enable, qemu-guest-agent]
+  - [systemctl, enable, gdm3]
+  - [touch, /var/lib/codex-gui-provisioned]

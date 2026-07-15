@@ -57,6 +57,9 @@ never launch against the live profile.
   singleton files, logs, and DevTools state.
 - Set temporary `HOME`, `CODEX_HOME`, and `XDG_CONFIG_HOME` values and use
   private `0700` permissions.
+- If the parent environment defines a proxy, force the same endpoint through
+  Electron's proxy switch. The temporary `XDG_CONFIG_HOME` hides desktop proxy
+  settings, and inheriting `HTTP_PROXY` alone does not cover `net.fetch`.
 - Never hard-link profile data. Never write credentials, cookies, tokens, or
   profile contents to logs, reports, screenshots metadata, or Git.
 - Delete the cloned profile after success or failure. `--keep-profile` is an
@@ -67,6 +70,36 @@ never launch against the live profile.
 The functional suite creates a disposable Git workspace with deterministic
 text and image fixtures. All model tool calls and terminal commands must target
 that workspace. No test may edit the rebuild repository or the user's files.
+
+Installed GUI acceptance must run in the project-managed Ubuntu Desktop VM. Run
+`npm run vm:provision` once, then use `npm run vm:reset` before each acceptance
+run. The visible, git-ignored `vm-state/` directory contains the clean baseline,
+disposable working disk, VM-only SSH key, logs, and screenshots. The baseline
+must never contain host Codex authentication or profile data. Authentication is
+copied into the working VM only for a test run and removed by the next reset.
+
+The host requires KVM/QEMU, `qemu-img`, `cloud-localds`, OpenSSH, and access to
+`/dev/kvm`; `remote-viewer` is optional. VM lifecycle commands run as the normal
+host user. Passwordless sudo is enabled only for the disposable `codex-test`
+guest account, not on the host.
+
+The VM uses KVM, an auto-login Xorg session with guest locking disabled, and a
+loopback-only SPICE display. It remains active when the host desktop is locked
+and does not open a host window unless `npm run vm:viewer` is requested. X11,
+`xdotool`, and AT-SPI are mandatory so the native Electron file picker is
+exercised for attachment tests. A missing GUI automation prerequisite is a
+blocking failure, never a skipped check. Host-desktop execution is a debugging
+fallback only and requires an unlocked X11 session.
+
+Each VM start establishes an SSH reverse tunnel from guest
+`127.0.0.1:7897` to host `127.0.0.1:7897` and verifies the proxy egress before
+declaring the VM ready. Clash remains bound to host loopback and is never
+exposed to the LAN. App tests inside the VM use the guest loopback endpoint.
+
+The VM manager currently provides the isolated desktop and reset boundary. The
+installed-app runner is not yet wired through it, so `build:accepted` must not
+be reported as VM-isolated until that integration and its regression tests are
+complete.
 
 ## 4. Required Acceptance Gates
 
