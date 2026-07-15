@@ -25,7 +25,8 @@ const { redactLog } = require("./smoke-linux-desktop");
 const PROJECT_ROOT = path.join(__dirname, "..");
 const REPORTS_ROOT = path.join(PROJECT_ROOT, "build-history", "acceptance-runs");
 const GUEST_DISK_ROOT = "/home/codex-test/codex-acceptance";
-const GUEST_TMP_ROOT = "/run/user/1000/ca";
+const GUEST_AUTH_ROOT = "/run/user/1000/ca";
+const GUEST_TMP_ROOT = "/tmp/ca";
 const PACKAGE_IDENTITY_PATHS = [
   "usr/lib/codex-desktop/Codex",
   "usr/lib/codex-desktop/resources/app.asar",
@@ -163,10 +164,12 @@ function guestPaths(runId) {
   const safeRunId = safeSegment(runId);
   const tempRunId = crypto.createHash("sha256").update(runId).digest("hex").slice(0, 12);
   const disk = `${GUEST_DISK_ROOT}/${safeRunId}`;
+  const auth = `${GUEST_AUTH_ROOT}/${tempRunId}`;
   const temp = `${GUEST_TMP_ROOT}/${tempRunId}`;
   return {
-    authCodex: `${temp}/source/.codex`,
-    authUserData: `${temp}/source/.config/Codex`,
+    auth,
+    authCodex: `${auth}/source/.codex`,
+    authUserData: `${auth}/source/.config/Codex`,
     candidateDeb: `${disk}/candidate.deb`,
     candidateExtracted: `${disk}/candidate-extracted`,
     disk,
@@ -545,12 +548,12 @@ async function runAcceptance(options = {}) {
     });
 
     await runStage("vm-stage", async () => {
-      await runGuest(`install -d -m 0700 ${shellQuote(paths.disk)} ${shellQuote(paths.scripts)} ${shellQuote(paths.reports)} ${shellQuote(paths.tempWork)}`, "guest: create acceptance directories");
+      await runGuest(`install -d -m 0700 ${shellQuote(paths.disk)} ${shellQuote(paths.scripts)} ${shellQuote(paths.reports)} ${shellQuote(paths.auth)} ${shellQuote(paths.tempWork)}`, "guest: create acceptance directories");
       vm.pushFileToGuest(candidateDeb, paths.candidateDeb);
       vm.pushFileToGuest(rollbackDeb, paths.rollbackDeb);
       vm.pushFileToGuest(path.join(__dirname, "smoke-linux-desktop.js"), `${paths.scripts}/smoke-linux-desktop.js`);
       vm.pushFileToGuest(path.join(__dirname, "acceptance-profile.js"), `${paths.scripts}/acceptance-profile.js`);
-      await vm.streamDirectoryToGuest(authSnapshot.root, `${paths.temp}/source`);
+      await vm.streamDirectoryToGuest(authSnapshot.root, `${paths.auth}/source`);
       authSnapshot.assertSourceUnchanged();
       authSnapshot.cleanup();
       authSnapshot = null;
@@ -560,7 +563,7 @@ async function runAcceptance(options = {}) {
 
     await runStage("guest-preflight", async () => {
       const output = await runGuest(
-        `set -eu; test "$(uname -m)" = x86_64; test "$(findmnt -n -o FSTYPE /run)" = tmpfs; test -S /run/user/1000/bus; test -f /run/user/1000/gdm/Xauthority; sudo -n true; test "$(node -p 'Number(process.versions.node.split(".")[0]) >= 18')" = true; ! dpkg-query -W codex-desktop >/dev/null 2>&1; curl --proxy http://127.0.0.1:${HOST_PROXY_PORT} --max-time 15 --silent --show-error https://api.ipify.org`,
+        `set -eu; test "$(uname -m)" = x86_64; test "$(findmnt -n -o FSTYPE /run)" = tmpfs; test "$(df -k --output=avail /tmp | tail -1)" -ge 8388608; test -S /run/user/1000/bus; test -f /run/user/1000/gdm/Xauthority; sudo -n true; test "$(node -p 'Number(process.versions.node.split(".")[0]) >= 18')" = true; ! dpkg-query -W codex-desktop >/dev/null 2>&1; curl --proxy http://127.0.0.1:${HOST_PROXY_PORT} --max-time 15 --silent --show-error https://api.ipify.org`,
         "guest: preflight",
       );
       const egress = output.trim().split(/\r?\n/).at(-1);

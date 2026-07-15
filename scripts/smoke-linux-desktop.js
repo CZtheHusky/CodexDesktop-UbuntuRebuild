@@ -64,7 +64,7 @@ function listX11Windows() {
   }
 }
 
-async function chooseFileInNativeDialog(file, existingWindowIds) {
+async function closeNativeFileDialog(existingWindowIds) {
   if (!process.env.DISPLAY) fail("native file picker automation requires an X11 DISPLAY");
   let dialog = null;
   const openDeadline = deadlineFromNow(10_000);
@@ -74,26 +74,13 @@ async function chooseFileInNativeDialog(file, existingWindowIds) {
     if (dialog) break;
     await sleep(200);
   }
-  if (!dialog) fail("native file picker window did not appear");
+  if (!dialog) return false;
 
   const decimalWindowId = String(Number.parseInt(dialog.id, 16));
   execFileSync("xdotool", ["windowactivate", "--sync", decimalWindowId]);
-  execFileSync("xdotool", ["key", "--clearmodifiers", "ctrl+l"]);
-  await sleep(200);
-  execFileSync("xdotool", ["type", "--clearmodifiers", "--delay", "1", "--", file]);
-  execFileSync("xdotool", ["key", "--clearmodifiers", "Return"]);
+  execFileSync("xdotool", ["key", "--clearmodifiers", "Escape"]);
   await sleep(500);
-  if (listX11Windows().some((window) => window.id === dialog.id)) {
-    execFileSync("xdotool", ["windowactivate", "--sync", decimalWindowId]);
-    execFileSync("xdotool", ["key", "--clearmodifiers", "Return"]);
-  }
-
-  const closeDeadline = deadlineFromNow(10_000);
-  while (Date.now() <= closeDeadline) {
-    if (!listX11Windows().some((window) => window.id === dialog.id)) return;
-    await sleep(200);
-  }
-  fail("native file picker did not close after selecting the fixture");
+  return true;
 }
 
 function deadlineFromNow(timeoutMs) {
@@ -447,6 +434,20 @@ function snapshotExpression() {
 
 function controlHaystack(control) {
   return `${control.aria}\n${control.title}\n${control.text}\n${control.placeholder}\n${control.dataTestId || ""}`;
+}
+
+function isDefaultApprovalControl(control) {
+  return /(^|\n)(Ask for approval|Request approval|请求批准|請求批准)(\n|$)/i.test(controlHaystack(control));
+}
+
+function isApprovalAllowControl(control) {
+  return /(^|\n)(Allow once|Run once|Approve once|允许一次|运行一次|允許一次|執行一次)(\n|$)/i.test(
+    controlHaystack(control),
+  );
+}
+
+function isApprovalDenyControl(control) {
+  return /(^|\n)(Deny|Decline|Reject|拒绝|拒絕)(\n|$)/i.test(controlHaystack(control));
 }
 
 function safeArtifactName(value) {
@@ -806,6 +807,26 @@ async function waitForControl(cdp, pattern, deadline, label) {
   return waitForSnapshot(cdp, deadline, label, (snapshot) => hasControl(snapshot, pattern));
 }
 
+async function dropFilesOnComposer(cdp, files) {
+  const point = await cdp.evaluate(composerEditorScript(`
+    if (!editor) return null;
+    const rect = editor.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  `));
+  if (!point) fail("composer/editor drop target was unavailable");
+  const data = {
+    dragOperationsMask: 1,
+    files,
+    items: [{
+      data: files.map((file) => `file://${file}`).join("\r\n"),
+      mimeType: "text/uri-list",
+    }],
+  };
+  for (const type of ["dragEnter", "dragOver", "drop"]) {
+    await cdp.send("Input.dispatchDragEvent", { data, type, ...point });
+  }
+}
+
 async function setFileInputFiles(cdp, files) {
   await cdp.send("DOM.enable");
   async function fileInputs() {
@@ -816,27 +837,53 @@ async function setFileInputFiles(cdp, files) {
     });
   }
 
+  async function openFilesAndFoldersAction() {
+    const filesPattern = "files and folders|文件和文件夹|檔案和資料夾";
+    const addPattern = "add files and more|add files|add photos|attach files|添加文件|添加照片|新增檔案|新增照片";
+    let selected = await pointerClickFirst(cdp, filesPattern);
+    for (let attempt = 0; !selected && attempt < 3; attempt += 1) {
+      if (!(await pointerClickFirst(cdp, addPattern))) break;
+      for (let poll = 0; !selected && poll < 10; poll += 1) {
+        await sleep(100);
+        selected = await pointerClickFirst(cdp, filesPattern);
+      }
+    }
+    if (!selected) {
+      const snapshot = await cdp.evaluate(snapshotExpression());
+      fail(`files and folders attachment action was not found${formatSnapshotForFailure(snapshot)}`);
+    }
+    await sleep(500);
+  }
+
   const existingWindowIds = new Set(listX11Windows().map((window) => window.id));
   let result = await fileInputs();
   if (result.nodeIds.length === 0) {
     const opened = await pointerClickFirst(
       cdp,
-      "attach|add files|add photos|附件|添加文件|添加照片|檔案|照片",
+      "add files and more|add files|add photos|attach files|添加文件|添加照片|新增檔案|新增照片",
     );
     if (!opened) fail("attachment control was not found");
     await sleep(500);
     result = await fileInputs();
   }
   if (result.nodeIds.length === 0) {
-    const selected = await pointerClickFirst(cdp, "files and folders|文件和文件夹|檔案和資料夾");
-    if (!selected) fail("files and folders attachment action was not found");
-    await sleep(500);
+    await openFilesAndFoldersAction();
     result = await fileInputs();
   }
   if (result.nodeIds.length === 0) {
     if (files.length !== 1) fail("native file picker automation selects one fixture at a time");
-    await chooseFileInNativeDialog(files[0], existingWindowIds);
-    return;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (attempt > 0) {
+        await openFilesAndFoldersAction();
+        result = await fileInputs();
+        if (result.nodeIds.length > 0) break;
+      }
+      if (await closeNativeFileDialog(existingWindowIds)) {
+        await dropFilesOnComposer(cdp, files);
+        return;
+      }
+    }
+    if (result.nodeIds.length === 0) fail("native file picker window did not appear after one retry");
   }
   await cdp.send("DOM.setFileInputFiles", {
     files,
@@ -857,7 +904,7 @@ async function removeAttachment(cdp, filename) {
       element.getAttribute("aria-label"),
       element.getAttribute("title"),
       element.innerText,
-    ].filter(Boolean).join("\n");
+    ].filter(Boolean).join("\\n");
     const controls = [...document.querySelectorAll("button,[role=button]")]
       .filter((element) => visible(element) && !element.disabled && element.getAttribute("aria-disabled") !== "true");
     const direct = controls.find((element) => label(element).includes(filename) && removePattern.test(label(element)));
@@ -933,14 +980,14 @@ async function exerciseAttachments(cdp, workspace, deadline) {
     cdp,
     deadlineFromNow(10_000),
     "image attachment removal",
-    (snapshot) => !snapshot.bodyText.includes("fixture.png") && snapshot.bodyText.includes("attachment.txt"),
+    (snapshot) => !snapshotHaystack(snapshot).includes("fixture.png") && snapshotHaystack(snapshot).includes("attachment.txt"),
   );
   await setFileInputFiles(cdp, [imageFile]);
   await waitForSnapshot(
     cdp,
     deadlineFromNow(10_000),
     "image attachment re-addition",
-    (snapshot) => snapshot.bodyText.includes("attachment.txt") && snapshot.bodyText.includes("fixture.png"),
+    (snapshot) => snapshotHaystack(snapshot).includes("attachment.txt") && snapshotHaystack(snapshot).includes("fixture.png"),
   );
 
   const marker = `attachment-observed-${Date.now()}`;
@@ -959,15 +1006,31 @@ async function exerciseAttachments(cdp, workspace, deadline) {
 }
 
 async function selectDefaultApprovals(cdp) {
-  const opened = await clickFirst(
+  const current = await cdp.evaluate(snapshotExpression());
+  if (current.controls.some(isDefaultApprovalControl)) return;
+
+  const opened = await pointerClickFirst(
     cdp,
     "change permissions|ask for approval|request approval|full access|approve for me|更改权限|请求批准|完全访问|替我审批|變更權限|請求批准|完整存取",
   );
   if (!opened) fail("permissions dropdown was not found");
-  await sleep(300);
-  const selected = await clickFirst(cdp, "ask for approval|request approval|请求批准|請求批准");
+  await waitForSnapshot(
+    cdp,
+    deadlineFromNow(5_000),
+    "default request-approval menu item",
+    (snapshot) => snapshot.controls.some(isDefaultApprovalControl),
+  );
+  const selected = await pointerClickFirst(
+    cdp,
+    "(^|\\n)(Ask for approval|Request approval|请求批准|請求批准)(\\n|$)",
+  );
   if (!selected) fail("default request-approval mode was not found");
-  await sleep(500);
+  await waitForSnapshot(
+    cdp,
+    deadlineFromNow(5_000),
+    "default request-approval mode",
+    (snapshot) => snapshot.controls.some(isDefaultApprovalControl),
+  );
 }
 
 async function exerciseApprovals(cdp, workspace, deadline) {
@@ -979,13 +1042,16 @@ async function exerciseApprovals(cdp, workspace, deadline) {
   const approvedPrompt = `必须使用 shell 运行 printf '${approvedMarker}\\n' > '${approvedFile}'，不要使用其他方式。`;
   await insertComposerText(cdp, approvedPrompt, approvedMarker);
   await submitComposer(cdp, approvedMarker);
-  await waitForControl(
+  await waitForSnapshot(
     cdp,
-    /run once|run command|approve|allow once|运行一次|运行命令|批准|允许运行|執行一次|核准/i,
     Math.min(deadline, deadlineFromNow(120_000)),
     "command approval request",
+    (snapshot) => snapshot.controls.some(isApprovalAllowControl),
   );
-  if (!(await clickFirst(cdp, "run once|run command|approve|allow once|运行一次|运行命令|批准|允许运行|執行一次|核准"))) {
+  if (!(await pointerClickFirst(
+    cdp,
+    "(^|\\n)(Allow once|Run once|Approve once|允许一次|运行一次|允許一次|執行一次)(\\n|$)",
+  ))) {
     fail("command approval could not be accepted");
   }
   await waitForFile(approvedFile, Math.min(deadline, deadlineFromNow(60_000)), "approved command output");
@@ -997,14 +1063,21 @@ async function exerciseApprovals(cdp, workspace, deadline) {
   const deniedPrompt = `使用文件修改工具在 '${deniedFile}' 写入 ${deniedMarker}，不要使用 shell。`;
   await insertComposerText(cdp, deniedPrompt, deniedMarker);
   await submitComposer(cdp, deniedMarker);
-  await waitForControl(
+  await waitForSnapshot(
     cdp,
-    /apply changes|apply|approve|应用更改|应用|批准|套用變更|套用|核准/i,
     Math.min(deadline, deadlineFromNow(120_000)),
     "file approval request",
+    (snapshot) => snapshot.controls.some(isApprovalDenyControl),
   );
-  if (!(await clickFirst(cdp, "deny|decline|reject|拒绝|拒絕"))) fail("file approval decline action was not found");
-  await sleep(1_000);
+  if (!(await pointerClickFirst(cdp, "(^|\\n)(Deny|Decline|Reject|拒绝|拒絕)(\\n|$)"))) {
+    fail("file approval decline action was not found");
+  }
+  await waitForSnapshot(
+    cdp,
+    deadlineFromNow(10_000),
+    "dismissed file approval request",
+    (snapshot) => !snapshot.controls.some(isApprovalDenyControl),
+  );
   if (fs.existsSync(deniedFile)) fail("declined file change was applied");
 }
 
@@ -1027,15 +1100,23 @@ async function exerciseStop(cdp, workspace, deadline) {
 }
 
 async function exerciseTerminal(cdp, deadline) {
-  const opened = await clickFirst(cdp, "terminal|终端|終端");
+  const opened = await pointerClickFirst(
+    cdp,
+    "(^|\\n)(Toggle bottom panel|Open Terminal|Terminal|切换底部面板|打开终端|切換底部面板|開啟終端)(\\n|$)",
+  );
   if (!opened) fail("terminal toggle was not found");
   const marker = `terminal-marker-${Date.now()}`;
-  const focused = await cdp.evaluate(`(() => {
-    const input = document.querySelector(".xterm-helper-textarea, .xterm textarea, [data-codex-terminal] textarea");
-    if (!input) return false;
-    input.focus();
-    return document.activeElement === input;
-  })()`);
+  let focused = false;
+  const inputDeadline = deadlineFromNow(10_000);
+  while (!focused && Date.now() <= inputDeadline) {
+    focused = await cdp.evaluate(`(() => {
+      const input = document.querySelector(".xterm-helper-textarea, .xterm textarea, [data-codex-terminal] textarea");
+      if (!input) return false;
+      input.focus();
+      return document.activeElement === input;
+    })()`);
+    if (!focused) await sleep(250);
+  }
   if (!focused) fail("terminal input was not available");
   await cdp.send("Input.insertText", { text: `printf '${marker}\\n'` });
   await dispatchKey(cdp, "Enter", "Enter", 13);
@@ -1045,7 +1126,12 @@ async function exerciseTerminal(cdp, deadline) {
     "terminal command output",
     (snapshot) => snapshotHaystack(snapshot).includes(marker),
   );
-  if (!(await clickFirst(cdp, "terminal|终端|終端"))) fail("terminal could not be closed");
+  if (!(await pointerClickFirst(
+    cdp,
+    "(^|\\n)(Toggle bottom panel|Terminal|切换底部面板|终端|切換底部面板|終端)(\\n|$)",
+  ))) {
+    fail("terminal could not be closed");
+  }
 }
 
 async function waitForSnapshot(cdp, deadline, label, predicate) {
@@ -1056,6 +1142,88 @@ async function waitForSnapshot(cdp, deadline, label, predicate) {
     await sleep(500);
   }
   fail(`${label} did not appear${formatSnapshotForFailure(snapshot)}`);
+}
+
+async function waitForTurnCompletion(cdp, deadline, label) {
+  let snapshot = null;
+  while (Date.now() <= deadline) {
+    snapshot = await cdp.evaluate(snapshotExpression());
+    if (snapshot.controls.some(isApprovalAllowControl)) {
+      if (!(await pointerClickFirst(
+        cdp,
+        "(^|\\n)(Allow once|Run once|Approve once|允许一次|运行一次|允許一次|執行一次)(\\n|$)",
+      ))) {
+        fail(`${label} approval could not be accepted`);
+      }
+      await sleep(500);
+      continue;
+    }
+    const running = snapshot.controls.some((control) =>
+      /(^|\n)(Steer|Stop|Cancel|指导|停止|取消|引導|終止)(\n|$)/i.test(controlHaystack(control))
+    );
+    if (!running && snapshot.editableCount > 0) return snapshot;
+    await sleep(500);
+  }
+  fail(`${label} did not finish${formatSnapshotForFailure(snapshot)}`);
+}
+
+async function currentConversationTitle(cdp) {
+  return cdp.evaluate(`(() => {
+    const actions = [...document.querySelectorAll("button,[role=button]")].find((element) =>
+      /task actions|任务操作|任務操作/i.test([
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+        element.innerText,
+      ].filter(Boolean).join("\\n"))
+    );
+    let current = actions?.parentElement ?? null;
+    for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
+      const lines = (current.innerText || "").split(/\\n/).map((line) => line.trim()).filter(Boolean);
+      const title = lines.find((line) =>
+        line.length <= 180 && !/^(task actions|open in|任务操作|任務操作|打开方式|開啟方式)$/i.test(line)
+      );
+      if (title) return title;
+    }
+    return null;
+  })()`);
+}
+
+async function openConversationFromSearch(cdp, title, deadline) {
+  if (!(await pointerClickFirst(cdp, "(^|\\n)(Search|搜索|搜尋)(\\n|$)"))) {
+    fail("global task search was not found after restart");
+  }
+  await waitForSnapshot(
+    cdp,
+    Math.min(deadline, deadlineFromNow(10_000)),
+    "global task search input",
+    (snapshot) => snapshot.editableCount > 0 && /search tasks|search tasks or run a command|搜索任务|搜尋任務/i.test(
+      snapshotHaystack(snapshot),
+    ),
+  );
+  const focused = await cdp.evaluate(`(() => {
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+    };
+    const editors = [...document.querySelectorAll("input,textarea,[contenteditable=true]")].filter(visible);
+    const editor = editors.find((element) => /search tasks|search tasks or run a command|搜索任务|搜尋任務/i.test(
+      element.getAttribute("placeholder") || element.getAttribute("aria-label") || ""
+    )) ?? editors.at(-1);
+    if (!editor) return false;
+    editor.focus();
+    return document.activeElement === editor;
+  })()`);
+  if (!focused) fail("global task search input could not be focused");
+  await dispatchKey(cdp, "a", "KeyA", 65, 2);
+  await cdp.send("Input.insertText", { text: title });
+  await waitForSnapshot(
+    cdp,
+    Math.min(deadline, deadlineFromNow(30_000)),
+    "persisted task search result",
+    (snapshot) => snapshot.bodyText.includes(title),
+  );
+  await dispatchKey(cdp, "Enter", "Enter", 13);
 }
 
 async function markerContexts(cdp, marker) {
@@ -1324,14 +1492,37 @@ async function exercisePlanFlow(cdp, deadline, workspace = null) {
       "implement this plan|implement plan|yes, implement|执行此计划|执行计划|实施此计划|实施计划|執行此計劃|執行計劃|實施此計劃",
     );
     if (!implemented) fail("Plan implementation action was not found");
+    const implementationDeadline = Math.min(deadline, deadlineFromNow(180_000));
+    let implementationSnapshot = null;
+    while (!fs.existsSync(implementationFile) && Date.now() <= implementationDeadline) {
+      implementationSnapshot = await cdp.evaluate(snapshotExpression());
+      if (implementationSnapshot.controls.some(isApprovalAllowControl)) break;
+      await sleep(500);
+    }
+    if (!fs.existsSync(implementationFile)) {
+      if (!implementationSnapshot?.controls.some(isApprovalAllowControl)) {
+        fail(`Plan implementation did not create output or request approval${formatSnapshotForFailure(implementationSnapshot)}`);
+      }
+      if (!(await pointerClickFirst(
+        cdp,
+        "(^|\\n)(Allow once|Run once|Approve once|允许一次|运行一次|允許一次|執行一次)(\\n|$)",
+      ))) {
+        fail("Plan implementation approval could not be accepted");
+      }
+    }
     await waitForFile(
       implementationFile,
-      Math.min(deadline, deadlineFromNow(180_000)),
+      implementationDeadline,
       "Plan implementation output",
     );
     if (fs.readFileSync(implementationFile, "utf8").trim() !== implementationMarker) {
       fail("Plan implementation output was incorrect");
     }
+    await waitForTurnCompletion(
+      cdp,
+      Math.min(deadline, deadlineFromNow(180_000)),
+      "Plan implementation turn",
+    );
   }
 
   const beforeExit = await cdp.evaluate(snapshotExpression());
@@ -1542,10 +1733,15 @@ async function runSmoke(options) {
     if (mode === "core") {
       const { persistenceMarker } = await exerciseCoreFlow(current.cdp, workspace, deadline, runStep);
       await runStep("conversation-restart", async () => {
+        const conversationTitle = await currentConversationTitle(current.cdp);
+        if (!conversationTitle) fail("test conversation title could not be read before restart");
         await closeCurrent();
         current = await launch();
         const snapshot = await waitForUiSnapshot(current.cdp, mode, deadlineFromNow(30_000));
         assertCoreUi(snapshot, mode);
+        if (!snapshot.bodyText.includes(persistenceMarker)) {
+          await openConversationFromSearch(current.cdp, conversationTitle, deadline);
+        }
         await waitForSnapshot(
           current.cdp,
           Math.min(deadline, deadlineFromNow(60_000)),
@@ -1625,7 +1821,10 @@ module.exports = {
   extractProposedPlan,
   formatSnapshotForFailure,
   fingerprintProfileSources,
+  isApprovalAllowControl,
+  isApprovalDenyControl,
   isLoadingSubmitBlock,
+  isDefaultApprovalControl,
   isSettingsSurface,
   occurrenceCount,
   parseX11Windows,

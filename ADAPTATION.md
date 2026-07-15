@@ -64,10 +64,14 @@ never launch against the live profile.
   settings, and inheriting `HTTP_PROXY` alone does not cover `net.fetch`.
 - Never hard-link profile data. Never write credentials, cookies, tokens, or
   profile contents to logs, reports, screenshots metadata, or Git.
-- Stream the snapshot into guest `/run` tmpfs and delete the host temporary copy
-  immediately. `--keep-profile` must never be used by mandatory acceptance.
-- Keep the guest tmpfs path short enough for Chromium to append Unix socket
-  names without exceeding Linux `sun_path` limits.
+- Stream only the authentication snapshot into guest `/run` tmpfs and delete
+  the host temporary copy immediately. `--keep-profile` must never be used by
+  mandatory acceptance.
+- Put temporary HOME, plugin cache, and disposable workspace data under the
+  guest-disk path `/tmp/ca`, and require at least 8 GiB free before testing.
+  Do not put this expandable data in `/run` tmpfs.
+- Keep both guest temporary roots short enough for Chromium to append Unix
+  socket names without exceeding Linux `sun_path` limits.
 - Verify that source authentication files do not change while taking the
   snapshot. The host app may be reopened after the snapshot is complete.
 
@@ -156,8 +160,8 @@ failure.
   paths. Additional input updates the Plan; implementation performs the
   expected workspace change.
 - A normal message after leaving Plan Mode does not render as a Plan.
-- Restarting the installed app with the same cloned profile restores the test
-  conversation and its marker.
+- Restarting the installed app with the same cloned profile can find the saved
+  task through global search and restores the test conversation and its marker.
 
 Core acceptance intentionally excludes external MCP servers, plugins, Skills,
 browser access, voice, cloud tasks, and image generation. These may have

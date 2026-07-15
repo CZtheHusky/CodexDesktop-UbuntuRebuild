@@ -11,6 +11,9 @@ const {
   detectActivePlanMode,
   detectPlanMode,
   extractProposedPlan,
+  isApprovalAllowControl,
+  isApprovalDenyControl,
+  isDefaultApprovalControl,
   isLoadingSubmitBlock,
   isSettingsSurface,
   occurrenceCount,
@@ -123,11 +126,43 @@ test("composer distinguishes local-config loading from real send errors", () => 
   assert.equal(isLoadingSubmitBlock({ bodyText: "Unable to send message\nAuthentication failed\nOK" }), false);
 });
 
+test("manual approval mode is not confused with Auto-review", () => {
+  const control = (text) => ({ aria: "", dataTestId: "", placeholder: "", text, title: "" });
+  assert.equal(isDefaultApprovalControl(control("Ask for approval")), true);
+  assert.equal(isDefaultApprovalControl(control("Ask for approval\nAlways ask before external writes")), true);
+  assert.equal(isDefaultApprovalControl(control("Approve for me")), false);
+});
+
+test("approval actions do not confuse activity rows with decision buttons", () => {
+  const control = (text) => ({ aria: "", dataTestId: "", placeholder: "", text, title: "" });
+  assert.equal(isApprovalAllowControl(control("Allow once")), true);
+  assert.equal(isApprovalAllowControl(control("Running command for 1m")), false);
+  assert.equal(isApprovalDenyControl(control("Deny")), true);
+  assert.equal(isApprovalDenyControl(control("Denied by policy")), false);
+});
+
 test("native picker discovery does not depend on the currently focused X11 window", () => {
   assert.deepEqual(
     parseX11Windows("0x04e00004  0 327008 codex.codex host Codex\n"),
     [{ className: "codex.codex", id: "0x04e00004", pid: 327008, title: "Codex" }],
   );
+});
+
+test("attachment smoke opens the native picker and drops real file paths", () => {
+  const smoke = fs.readFileSync(path.join(__dirname, "smoke-linux-desktop.js"), "utf8");
+  assert.match(smoke, /native file picker window did not appear/);
+  assert.match(smoke, /attempt < 2/);
+  assert.match(smoke, /Input\.dispatchDragEvent/);
+  assert.match(smoke, /mimeType: "text\/uri-list"/);
+  assert.doesNotMatch(smoke, /"attach\|add files/);
+  assert.match(smoke, /\.filter\(Boolean\)\.join\("\\\\n"\)/);
+});
+
+test("terminal smoke follows the current bottom-panel entry point", () => {
+  const smoke = fs.readFileSync(path.join(__dirname, "smoke-linux-desktop.js"), "utf8");
+  assert.match(smoke, /Toggle bottom panel\|Open Terminal\|Terminal/);
+  assert.match(smoke, /\.xterm-helper-textarea/);
+  assert.match(smoke, /terminal command output/);
 });
 
 test("smoke log monitor treats startup syntax errors as fatal", () => {
@@ -190,6 +225,23 @@ test("proposed_plan extraction ignores surrounding assistant text", () => {
   assert.equal(extractProposedPlan("plain plan text"), null);
 });
 
+test("Plan implementation accepts a real manual approval before asserting output", () => {
+  const smoke = fs.readFileSync(path.join(__dirname, "smoke-linux-desktop.js"), "utf8");
+  assert.match(smoke, /Plan implementation approval could not be accepted/);
+  assert.match(smoke, /implementationSnapshot\.controls\.some\(isApprovalAllowControl\)/);
+  assert.match(smoke, /Plan implementation output was incorrect/);
+  assert.match(smoke, /await waitForTurnCompletion\(/);
+  assert.match(smoke, /Plan implementation turn/);
+});
+
+test("restart persistence searches the saved task before asserting its unique marker", () => {
+  const smoke = fs.readFileSync(path.join(__dirname, "smoke-linux-desktop.js"), "utf8");
+  assert.match(smoke, /const conversationTitle = await currentConversationTitle/);
+  assert.match(smoke, /await openConversationFromSearch\(current\.cdp, conversationTitle, deadline\)/);
+  assert.match(smoke, /persisted task search result/);
+  assert.match(smoke, /restored test conversation/);
+});
+
 test("response markers must appear in both prompt and response", () => {
   assert.equal(occurrenceCount("marker", "marker"), 1);
   assert.equal(occurrenceCount("marker then marker", "marker"), 2);
@@ -234,15 +286,23 @@ test("VM acceptance contract requires isolation, baseline, evidence, and cleanup
   }
   assert.equal(failureClassForStage("vm-reset"), "infrastructure");
   assert.equal(failureClassForStage("installed-core-ui"), "product");
-  assert.match(guestPaths("run/id").temp, /^\/run\/user\/1000\/ca\/[a-f0-9]{12}$/);
+  assert.match(guestPaths("run/id").auth, /^\/run\/user\/1000\/ca\/[a-f0-9]{12}$/);
+  assert.match(guestPaths("run/id").temp, /^\/tmp\/ca\/[a-f0-9]{12}$/);
 });
 
-test("guest tmpfs paths leave room for Chromium Unix socket names", () => {
+test("guest disk work paths leave room for Chromium Unix socket names", () => {
   const first = guestPaths("2026-07-15T11-52-43-292Z-long-version-and-commit");
   const second = guestPaths("2026-07-15T11-52-43-293Z-long-version-and-commit");
   assert.ok(first.tempWork.length < 64, `temporary path is too long: ${first.tempWork}`);
+  assert.match(first.auth, /^\/run\/user\/1000\/ca\//);
   assert.notEqual(first.temp, second.temp);
   assert.match(first.disk, /long-version-and-commit/);
+});
+
+test("guest preflight requires disk space without incompatible df options", () => {
+  const runner = fs.readFileSync(path.join(__dirname, "accept-linux-desktop.js"), "utf8");
+  assert.match(runner, /df -k --output=avail \/tmp/);
+  assert.doesNotMatch(runner, /df -Pk --output/);
 });
 
 test("installed package identity parser preserves absolute file hashes", () => {
