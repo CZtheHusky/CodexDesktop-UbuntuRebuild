@@ -12,6 +12,7 @@ const {
   detectPlanMode,
   extractProposedPlan,
   isLoadingSubmitBlock,
+  isSettingsSurface,
   occurrenceCount,
   parseX11Windows,
   redactLog,
@@ -309,6 +310,20 @@ test("core UI smoke opens only its isolated test project", () => {
   const smoke = fs.readFileSync(path.join(__dirname, "smoke-linux-desktop.js"), "utf8");
   assert.match(smoke, /mode === "core" \|\| mode === "auth-probe"/);
   assert.match(smoke, /args\.push\("--open-project", workspace\.root\)/);
+});
+
+test("settings detection follows the full-page settings route", () => {
+  const settings = {
+    bodyText: "Back to app\nGeneral\nAppearance",
+    controls: [{ aria: "", title: "", text: "", placeholder: "Search settings" }],
+  };
+  const main = {
+    bodyText: "Codex\nGeneral purpose conversation",
+    controls: [{ aria: "Settings", title: "", text: "", placeholder: "" }],
+  };
+
+  assert.equal(isSettingsSurface(settings), true);
+  assert.equal(isSettingsSurface(main), false);
 });
 
 test("ADAPTATION.md is the single normative acceptance document", () => {

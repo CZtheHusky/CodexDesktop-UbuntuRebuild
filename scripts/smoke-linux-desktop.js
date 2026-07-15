@@ -478,6 +478,10 @@ function snapshotHaystack(snapshot) {
   return `${snapshot.bodyText}\n${snapshot.controls.map(controlHaystack).join("\n")}`;
 }
 
+function isSettingsSurface(snapshot) {
+  return hasControl(snapshot, /search settings|搜索设置|搜尋設定/i);
+}
+
 function occurrenceCount(text, value) {
   return String(text).split(value).length - 1;
 }
@@ -1108,13 +1112,25 @@ async function exerciseMenu(cdp, patternSource, label) {
   await pressEscape(cdp);
 }
 
+async function closeSettings(cdp, snapshot) {
+  if (!(await pointerClickFirst(cdp, "^Back(?:\\n|$)|back to app|返回应用|返回應用"))) {
+    fail(`settings back control was not found${formatSnapshotForFailure(snapshot)}`);
+  }
+  await waitForSnapshot(
+    cdp,
+    deadlineFromNow(10_000),
+    "main app after closing settings",
+    (value) => !isSettingsSurface(value) && value.editableCount >= 1,
+  );
+}
+
 async function exerciseSettings(cdp) {
   await dispatchKey(cdp, ",", "Comma", 188, 2);
   for (let i = 0; i < 8; i += 1) {
     await sleep(250);
     const snapshot = await cdp.evaluate(snapshotExpression());
-    if (/settings|设置|設定|general|常规|一般|appearance|外观|外觀/i.test(snapshot.bodyText)) {
-      await pressEscape(cdp);
+    if (isSettingsSurface(snapshot)) {
+      await closeSettings(cdp, snapshot);
       return;
     }
   }
@@ -1132,10 +1148,13 @@ async function exerciseSettings(cdp) {
     const snapshot = await cdp.evaluate(snapshotExpression());
     fail(`settings action was not found in the profile menu${formatSnapshotForFailure(snapshot)}`);
   }
-  await sleep(500);
-  const snapshot = await cdp.evaluate(snapshotExpression());
-  if (!/settings|设置|設定/i.test(snapshot.bodyText)) fail("settings surface did not open");
-  await pressEscape(cdp);
+  const snapshot = await waitForSnapshot(
+    cdp,
+    deadlineFromNow(10_000),
+    "settings surface",
+    (value) => isSettingsSurface(value),
+  );
+  await closeSettings(cdp, snapshot);
 }
 
 async function exerciseModelPicker(cdp) {
@@ -1607,6 +1626,7 @@ module.exports = {
   formatSnapshotForFailure,
   fingerprintProfileSources,
   isLoadingSubmitBlock,
+  isSettingsSurface,
   occurrenceCount,
   parseX11Windows,
   redactLog,
