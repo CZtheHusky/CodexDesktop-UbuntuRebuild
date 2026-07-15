@@ -732,7 +732,12 @@ async function insertComposerText(cdp, text, expectedSubstring = text) {
   }
 }
 
-async function submitComposer(cdp, marker) {
+function isLoadingSubmitBlock(snapshot) {
+  return /unable to send message|cannot send message|无法发送消息|無法傳送訊息/i.test(snapshot.bodyText)
+    && /\bloading\b|加载|載入/i.test(snapshot.bodyText);
+}
+
+async function submitComposer(cdp, marker, loadingDeadline = Date.now() + 30_000) {
   if (!(await focusComposer(cdp))) fail("composer/editor could not be focused before submit");
   await dispatchKey(cdp, "Enter", "Enter", 13);
   for (let i = 0; i < 20; i += 1) {
@@ -741,6 +746,12 @@ async function submitComposer(cdp, marker) {
     if (!text.includes(marker)) return;
     const snapshot = await cdp.evaluate(snapshotExpression());
     if (/unable to send message|cannot send message|无法发送消息|無法傳送訊息/i.test(snapshot.bodyText)) {
+      if (isLoadingSubmitBlock(snapshot) && Date.now() <= loadingDeadline) {
+        const dismissed = await clickFirst(cdp, "^OK$|^确定$|^確定$");
+        if (!dismissed) await pressEscape(cdp);
+        await sleep(500);
+        return submitComposer(cdp, marker, loadingDeadline);
+      }
       fail(`message submission reached an error dialog${formatSnapshotForFailure(snapshot)}`);
     }
   }
@@ -774,6 +785,12 @@ async function submitComposer(cdp, marker) {
     if (!(await getComposerText(cdp)).includes(marker)) return;
     const snapshot = await cdp.evaluate(snapshotExpression());
     if (/unable to send message|cannot send message|无法发送消息|無法傳送訊息/i.test(snapshot.bodyText)) {
+      if (isLoadingSubmitBlock(snapshot) && Date.now() <= loadingDeadline) {
+        const dismissed = await clickFirst(cdp, "^OK$|^确定$|^確定$");
+        if (!dismissed) await pressEscape(cdp);
+        await sleep(500);
+        return submitComposer(cdp, marker, loadingDeadline);
+      }
       fail(`message submission reached an error dialog${formatSnapshotForFailure(snapshot)}`);
     }
   }
@@ -1389,7 +1406,9 @@ async function runSmoke(options) {
     sourceUserData: options.sourceUserData,
     tempRoot: options.tempRoot,
   });
-  const workspace = mode === "core" ? createTestWorkspace(options.tempRoot) : null;
+  const workspace = mode === "core" || mode === "auth-probe"
+    ? createTestWorkspace(options.tempRoot)
+    : null;
   const reportDir = options.reportDir ? path.resolve(options.reportDir) : null;
   const report = {
     appPath,
@@ -1587,6 +1606,7 @@ module.exports = {
   extractProposedPlan,
   formatSnapshotForFailure,
   fingerprintProfileSources,
+  isLoadingSubmitBlock,
   occurrenceCount,
   parseX11Windows,
   redactLog,

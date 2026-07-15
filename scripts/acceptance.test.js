@@ -11,6 +11,7 @@ const {
   detectActivePlanMode,
   detectPlanMode,
   extractProposedPlan,
+  isLoadingSubmitBlock,
   occurrenceCount,
   parseX11Windows,
   redactLog,
@@ -114,6 +115,11 @@ test("Electron-as-Node smoke driver launches the child as a desktop app", () => 
     if (previous == null) delete process.env.ELECTRON_RUN_AS_NODE;
     else process.env.ELECTRON_RUN_AS_NODE = previous;
   }
+});
+
+test("composer distinguishes local-config loading from real send errors", () => {
+  assert.equal(isLoadingSubmitBlock({ bodyText: "Unable to send message\nLoading…\nOK" }), true);
+  assert.equal(isLoadingSubmitBlock({ bodyText: "Unable to send message\nAuthentication failed\nOK" }), false);
 });
 
 test("native picker discovery does not depend on the currently focused X11 window", () => {
@@ -301,6 +307,7 @@ test("accepted history promotion verifies before deleting its rollback directory
 
 test("core UI smoke opens only its isolated test project", () => {
   const smoke = fs.readFileSync(path.join(__dirname, "smoke-linux-desktop.js"), "utf8");
+  assert.match(smoke, /mode === "core" \|\| mode === "auth-probe"/);
   assert.match(smoke, /args\.push\("--open-project", workspace\.root\)/);
 });
 

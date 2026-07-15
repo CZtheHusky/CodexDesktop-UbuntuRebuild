@@ -139,6 +139,8 @@ failure.
   composer, project context, and sidebar.
 - Open the disposable workspace through the app's path-open contract.
 - Normal chat returns a unique marker and does not use Plan layout.
+- A local `Loading` submission block is dismissed and allowed to finish before
+  submission continues; any other send error fails immediately.
 - Text and image attachments can be added, displayed, submitted, and removed;
   the text attachment content is observed in the response.
 - Model picker, reasoning/Fast controls, approval menu, settings, sidebar,
@@ -170,10 +172,11 @@ installed version is not used as the rollback source. If no rollback artifact
 exists, installation is blocked.
 
 Install the accepted baseline in the guest first and require both empty-profile
-startup and an authenticated real marker response. Then install the candidate
-with guest `sudo -n apt-get install --reinstall` and verify hashes for the main
-binary, `app.asar`, and bundled CLI. If installation or core UI fails, reinstall
-the rollback package and repeat both baseline probes.
+startup and an authenticated real marker response from a disposable guest
+workspace. Never let cloned recent-project state select a host-only path. Then
+install the candidate with guest `sudo -n apt-get install --reinstall` and
+verify hashes for the main binary, `app.asar`, and bundled CLI. If installation
+or core UI fails, reinstall the rollback package and repeat both baseline probes.
 
 Passwordless sudo exists only for the disposable VM account. The host Codex
 package and executable hashes must be unchanged before and after acceptance.
