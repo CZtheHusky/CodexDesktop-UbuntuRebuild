@@ -119,8 +119,8 @@ The Linux build pipeline runs these steps:
 5. `verify-linux-desktop.js` checks the prepared tree.
 6. Electron Forge creates the package.
 7. `verify-linux-desktop.js` checks the generated `.deb`.
-8. `archive-build-history.js` copies verified artifacts into the local build
-   history and keeps the latest 3 versions.
+8. `archive-build-history.js` refreshes the isolated candidate artifact. The
+   accepted history is untouched until `npm run build:accepted` passes.
 
 ## Output
 
@@ -133,15 +133,22 @@ out/make/deb/x64/codex-desktop_<version>_amd64.deb
 For arm64 builds, use the matching `out/make/deb/arm64/` package. Linux builds
 intentionally emit only the supported Ubuntu `.deb` artifact.
 
-After a successful Linux build, artifacts are also copied to the ignored local
-history directory:
+After a successful Linux build, artifacts are copied to the ignored candidate
+directory:
+
+```text
+build-history/candidates/codex-desktop/<version>+<build>/<platform>/make/
+```
+
+After the installed-app acceptance flow passes, the candidate is promoted to:
 
 ```text
 build-history/codex-desktop/<version>+<build>/<platform>/make/
 ```
 
-The archive keeps the latest 3 Codex Desktop version directories. Rebuilding the
-same version refreshes that version's platform directory.
+The accepted archive keeps the latest 3 Codex Desktop version directories.
+Rebuilding the same version refreshes only its candidate; the accepted platform
+directory changes only after another complete acceptance pass.
 
 ## Install
 
@@ -194,11 +201,12 @@ npm run build:accepted
 ```
 
 This runs unit tests, the Linux build, package/static verifiers, generated bundle
-syntax checks, GUI smoke tests with an empty temporary profile, GUI smoke tests
-with a temporary clone of the local Codex profile, and build-history checks.
+syntax checks, an empty-profile candidate smoke, Debian installation, the full
+authenticated core UI suite against the installed app, rollback protection, and
+accepted build-history checks.
 
-For the detailed acceptance contract and profile policy, see
-[`docs/acceptance.md`](docs/acceptance.md).
+For the normative adaptation process, required UI matrix, profile policy, and
+rollback contract, see [`ADAPTATION.md`](ADAPTATION.md).
 
 ## Troubleshooting
 

@@ -6,15 +6,16 @@
  * the login/profile data into a temporary HOME so the app can pass real UI
  * gates without requiring a fresh login.
  */
+const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
 const net = require("net");
 const os = require("os");
 const path = require("path");
-const { spawn } = require("child_process");
+const { execFileSync, spawn } = require("child_process");
 
 const PROJECT_ROOT = path.join(__dirname, "..");
-const VALID_MODES = new Set(["safe", "auth-clone", "plan-flow", "real"]);
+const VALID_MODES = new Set(["safe", "auth-clone", "core", "plan-flow", "real"]);
 const VALID_PLATFORMS = new Set(["linux-x64", "linux-arm64"]);
 const DEFAULT_TIMEOUT_MS = 90_000;
 const LOG_LIMIT = 256 * 1024;
@@ -24,13 +25,34 @@ const PROFILE_SKIP_NAMES = new Set([
   "Code Cache",
   "Crashpad",
   "DawnCache",
+  "DawnGraphiteCache",
+  "DawnWebGPUCache",
+  "DevToolsActivePort",
   "GPUCache",
   "ShaderCache",
   "SingletonCookie",
   "SingletonLock",
   "SingletonSocket",
+  "TransportSecurity",
   ".tmp",
+  "app-server-control",
+  "app-server-daemon",
+  "archived_sessions",
   "logs",
+  "log",
+  "process_manager",
+  "sessions",
+  "shell_snapshots",
+]);
+
+const CODEX_PROFILE_ALLOW_NAMES = new Set([
+  ".codex-global-state.json",
+  ".personality_migration",
+  "auth.json",
+  "config.toml",
+  "installation_id",
+  "models_cache.json",
+  "version.json",
 ]);
 
 function argValue(name, fallback) {
@@ -114,19 +136,51 @@ function createLogMonitor() {
   return { assertNoFatal, includes, push, text };
 }
 
-function shouldCopyProfilePath(source) {
-  return !PROFILE_SKIP_NAMES.has(path.basename(source));
+function sha256File(file) {
+  const hash = crypto.createHash("sha256");
+  hash.update(fs.readFileSync(file));
+  return hash.digest("hex");
 }
 
-function copyDirIfPresent(source, destination) {
+function shouldCopyProfilePath(source, options = {}) {
+  const base = path.basename(source);
+  if (PROFILE_SKIP_NAMES.has(base)) return false;
+  if (/\.(?:lock|log|pid|sock|socket|sqlite(?:-shm|-wal)?)$/i.test(base)) return false;
+  if (/^\.org\.chromium\.Chromium\./.test(base)) return false;
+
+  if (options.kind === "codex" && options.root) {
+    const relative = path.relative(options.root, source);
+    if (!relative) return true;
+    if (relative.includes(path.sep)) return false;
+    return CODEX_PROFILE_ALLOW_NAMES.has(relative);
+  }
+  return true;
+}
+
+function copyDirIfPresent(source, destination, kind = "desktop") {
   if (!fs.existsSync(source)) return false;
   fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
   fs.cpSync(source, destination, {
     recursive: true,
     dereference: false,
-    filter: shouldCopyProfilePath,
+    filter: (file) => shouldCopyProfilePath(file, { kind, root: source }),
   });
   return true;
+}
+
+function fingerprintProfileSources(paths) {
+  const fingerprints = {};
+  for (const file of paths) {
+    if (fs.existsSync(file) && fs.statSync(file).isFile()) fingerprints[file] = sha256File(file);
+  }
+  return fingerprints;
+}
+
+function assertProfileSourcesUnchanged(fingerprints) {
+  for (const [file, before] of Object.entries(fingerprints)) {
+    if (!fs.existsSync(file)) fail(`source profile file disappeared during smoke test: ${file}`);
+    if (sha256File(file) !== before) fail(`source profile file changed during smoke test: ${file}`);
+  }
 }
 
 function createTempHome(prefix) {
@@ -159,12 +213,25 @@ function createProfile(mode, options = {}) {
     XDG_CONFIG_HOME: path.join(profile.home, ".config"),
   };
 
-  if (mode === "auth-clone" || mode === "plan-flow") {
+  let sourceFingerprints = {};
+  if (mode === "auth-clone" || mode === "core" || mode === "plan-flow") {
     const realHome = os.homedir();
-    const copiedCodex = copyDirIfPresent(path.join(realHome, ".codex"), path.join(profile.home, ".codex"));
+    const sourceCodex = process.env.CODEX_HOME || path.join(realHome, ".codex");
+    const sourceConfigRoot = process.env.XDG_CONFIG_HOME || path.join(realHome, ".config");
+    const sourceUserData = path.join(sourceConfigRoot, "Codex");
+    sourceFingerprints = fingerprintProfileSources([
+      path.join(sourceCodex, "auth.json"),
+      path.join(sourceCodex, "config.toml"),
+      path.join(sourceCodex, "installation_id"),
+      path.join(sourceUserData, "Cookies"),
+      path.join(sourceUserData, "Local State"),
+      path.join(sourceUserData, "Preferences"),
+    ]);
+    const copiedCodex = copyDirIfPresent(sourceCodex, path.join(profile.home, ".codex"), "codex");
     const copiedUserData = copyDirIfPresent(
-      path.join(realHome, ".config", "Codex"),
+      sourceUserData,
       path.join(profile.home, ".config", "Codex"),
+      "desktop",
     );
     if (!copiedCodex && !copiedUserData) {
       fail(`${mode} smoke could not find ~/.codex or ~/.config/Codex to clone`);
@@ -173,12 +240,40 @@ function createProfile(mode, options = {}) {
 
   return {
     cleanup: () => {
+      assertProfileSourcesUnchanged(sourceFingerprints);
       if (!options.keepProfile) fs.rmSync(profile.root, { recursive: true, force: true });
       else console.log(`  [debug] kept smoke profile: ${profile.root}`);
     },
     env,
     home: profile.home,
     root: profile.root,
+    sourceFingerprints,
+  };
+}
+
+function createTestWorkspace() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-desktop-acceptance-workspace-"));
+  const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-desktop-acceptance-external-"));
+  fs.chmodSync(root, 0o700);
+  fs.chmodSync(externalRoot, 0o700);
+  fs.writeFileSync(path.join(root, "seed.txt"), "seed-content\n", "utf8");
+  fs.writeFileSync(path.join(root, "attachment.txt"), "attachment-content-marker\n", "utf8");
+  fs.writeFileSync(
+    path.join(root, "fixture.png"),
+    Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"),
+  );
+  execFileSync("git", ["init", "-q", root]);
+  execFileSync("git", ["-C", root, "config", "user.email", "acceptance@example.invalid"]);
+  execFileSync("git", ["-C", root, "config", "user.name", "Codex Acceptance"]);
+  execFileSync("git", ["-C", root, "add", "."]);
+  execFileSync("git", ["-C", root, "commit", "-qm", "acceptance fixture"]);
+  return {
+    cleanup: () => {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(externalRoot, { recursive: true, force: true });
+    },
+    externalRoot,
+    root,
   };
 }
 
@@ -242,6 +337,7 @@ function connectCdp(webSocketDebuggerUrl) {
     const ws = new WebSocket(webSocketDebuggerUrl);
     let nextId = 0;
     const pending = new Map();
+    const listeners = new Map();
 
     function send(method, params = {}) {
       return new Promise((innerResolve, innerReject) => {
@@ -253,11 +349,14 @@ function connectCdp(webSocketDebuggerUrl) {
 
     ws.onmessage = (event) => {
       const message = JSON.parse(event.data);
-      if (!message.id || !pending.has(message.id)) return;
-      const request = pending.get(message.id);
-      pending.delete(message.id);
-      if (message.error) request.reject(new Error(JSON.stringify(message.error)));
-      else request.resolve(message.result);
+      if (message.id && pending.has(message.id)) {
+        const request = pending.get(message.id);
+        pending.delete(message.id);
+        if (message.error) request.reject(new Error(JSON.stringify(message.error)));
+        else request.resolve(message.result);
+        return;
+      }
+      for (const listener of listeners.get(message.method) ?? []) listener(message.params ?? {});
     };
     ws.onerror = () => reject(new Error("DevTools WebSocket failed"));
     ws.onopen = () => {
@@ -274,6 +373,12 @@ function connectCdp(webSocketDebuggerUrl) {
             fail(`Runtime.evaluate failed: ${description}`);
           }
           return result.result.value;
+        },
+        on: (method, listener) => {
+          const values = listeners.get(method) ?? [];
+          values.push(listener);
+          listeners.set(method, values);
+          return () => listeners.set(method, values.filter((value) => value !== listener));
         },
         send,
       });
@@ -327,13 +432,15 @@ function snapshotExpression() {
       className: typeof el.className === "string" ? el.className.slice(0, 400) : "",
       dataSelected: el.getAttribute("data-selected") || "",
       dataState: el.getAttribute("data-state") || "",
+      dataTestId: el.getAttribute("data-testid") || "",
       disabled: el.disabled === true || el.getAttribute("aria-disabled") === "true",
       index,
       placeholder: el.getAttribute("placeholder") || "",
       role: el.getAttribute("role") || "",
       tag: el.tagName,
       text: (el.innerText || el.value || "").trim().slice(0, 180),
-      title: el.getAttribute("title") || ""
+      title: el.getAttribute("title") || "",
+      type: el.getAttribute("type") || ""
     }));
     return {
       bodyText: (document.body && document.body.innerText || "").slice(0, 20000),
@@ -346,7 +453,28 @@ function snapshotExpression() {
 }
 
 function controlHaystack(control) {
-  return `${control.aria}\n${control.title}\n${control.text}\n${control.placeholder}`;
+  return `${control.aria}\n${control.title}\n${control.text}\n${control.placeholder}\n${control.dataTestId || ""}`;
+}
+
+function safeArtifactName(value) {
+  return String(value).replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+async function captureScreenshot(cdp, reportDir, label) {
+  if (!reportDir) return null;
+  const screenshots = path.join(reportDir, "screenshots");
+  fs.mkdirSync(screenshots, { recursive: true, mode: 0o700 });
+  const file = path.join(screenshots, `${safeArtifactName(label)}.png`);
+  const result = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+  fs.writeFileSync(file, Buffer.from(result.data, "base64"), { mode: 0o600 });
+  return path.relative(reportDir, file);
+}
+
+function writeJson(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temp, file);
 }
 
 function hasControl(snapshot, pattern) {
@@ -355,6 +483,10 @@ function hasControl(snapshot, pattern) {
 
 function snapshotHaystack(snapshot) {
   return `${snapshot.bodyText}\n${snapshot.controls.map(controlHaystack).join("\n")}`;
+}
+
+function occurrenceCount(text, value) {
+  return String(text).split(value).length - 1;
 }
 
 function formatSnapshotForFailure(snapshot) {
@@ -490,7 +622,13 @@ async function clickFirst(cdp, patternSource, flags = "i") {
   return cdp.evaluate(`(() => {
     const pattern = new RegExp(${JSON.stringify(patternSource)}, ${JSON.stringify(flags)});
     const controls = [...document.querySelectorAll("button,[role=button]")];
-    const target = controls.find((el) => pattern.test([el.getAttribute("aria-label"), el.getAttribute("title"), el.innerText].filter(Boolean).join("\\n")));
+    const target = controls.find((el) => {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      const visible = rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+      const enabled = !el.disabled && el.getAttribute("aria-disabled") !== "true";
+      return visible && enabled && pattern.test([el.getAttribute("aria-label"), el.getAttribute("title"), el.innerText].filter(Boolean).join("\\n"));
+    });
     if (!target) return false;
     target.click();
     return true;
@@ -570,12 +708,275 @@ async function insertComposerText(cdp, text, expectedSubstring = text) {
 async function submitComposer(cdp, marker) {
   if (!(await focusComposer(cdp))) fail("composer/editor could not be focused before submit");
   await dispatchKey(cdp, "Enter", "Enter", 13);
-  await sleep(1_000);
-  const text = await getComposerText(cdp);
-  if (!text.includes(marker)) return;
+  for (let i = 0; i < 20; i += 1) {
+    await sleep(250);
+    const text = await getComposerText(cdp);
+    if (!text.includes(marker)) return;
+    const snapshot = await cdp.evaluate(snapshotExpression());
+    if (/unable to send message|cannot send message|无法发送消息|無法傳送訊息/i.test(snapshot.bodyText)) {
+      fail(`message submission reached an error dialog${formatSnapshotForFailure(snapshot)}`);
+    }
+  }
 
-  const clicked = await clickFirst(cdp, "send|submit|发送|提交|傳送|送出|arrow");
-  if (!clicked) fail("composer prompt did not submit with Enter and send button was not found");
+  const clicked = await cdp.evaluate(composerEditorScript(`
+    if (!editor) return false;
+    let container = editor;
+    for (let depth = 0; container && depth < 6; depth += 1, container = container.parentElement) {
+      const buttons = [...container.querySelectorAll("button,[role=button]")].filter((button) => {
+        const rect = button.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && !button.disabled && button.getAttribute("aria-disabled") !== "true";
+      });
+      if (buttons.length > 0) {
+        const send = buttons.find((button) => /send|submit|发送|提交|傳送|送出/i.test([
+          button.getAttribute("aria-label"),
+          button.getAttribute("title"),
+          button.innerText
+        ].filter(Boolean).join("\\n"))) || buttons.at(-1);
+        send.click();
+        return true;
+      }
+    }
+    return false;
+  `));
+  if (!clicked) {
+    const snapshot = await cdp.evaluate(snapshotExpression());
+    fail(`composer prompt did not submit and its send button was not found${formatSnapshotForFailure(snapshot)}`);
+  }
+  for (let i = 0; i < 20; i += 1) {
+    await sleep(250);
+    if (!(await getComposerText(cdp)).includes(marker)) return;
+    const snapshot = await cdp.evaluate(snapshotExpression());
+    if (/unable to send message|cannot send message|无法发送消息|無法傳送訊息/i.test(snapshot.bodyText)) {
+      fail(`message submission reached an error dialog${formatSnapshotForFailure(snapshot)}`);
+    }
+  }
+  const snapshot = await cdp.evaluate(snapshotExpression());
+  fail(`composer prompt remained after submit${formatSnapshotForFailure(snapshot)}`);
+}
+
+async function waitForControl(cdp, pattern, deadline, label) {
+  return waitForSnapshot(cdp, deadline, label, (snapshot) => hasControl(snapshot, pattern));
+}
+
+async function setFileInputFiles(cdp, files) {
+  await cdp.send("DOM.enable");
+  async function fileInputs() {
+    const document = await cdp.send("DOM.getDocument", { depth: -1, pierce: true });
+    return cdp.send("DOM.querySelectorAll", {
+      nodeId: document.root.nodeId,
+      selector: 'input[type="file"]',
+    });
+  }
+
+  let result = await fileInputs();
+  if (result.nodeIds.length === 0) {
+    const opened = await clickFirst(cdp, "attach|add files|add photos|附件|添加文件|添加照片|檔案|照片");
+    if (!opened) fail("attachment control was not found");
+    await sleep(500);
+    result = await fileInputs();
+  }
+  if (result.nodeIds.length === 0) fail("attachment file input was not found");
+  await cdp.send("DOM.setFileInputFiles", {
+    files,
+    nodeId: result.nodeIds.at(-1),
+  });
+}
+
+async function removeAttachment(cdp, filename) {
+  return cdp.evaluate(`(() => {
+    const filename = ${JSON.stringify(filename)};
+    const removePattern = /remove|delete|clear|移除|删除|刪除/i;
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+    };
+    const label = (element) => [
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.innerText,
+    ].filter(Boolean).join("\n");
+    const controls = [...document.querySelectorAll("button,[role=button]")]
+      .filter((element) => visible(element) && !element.disabled && element.getAttribute("aria-disabled") !== "true");
+    const direct = controls.find((element) => label(element).includes(filename) && removePattern.test(label(element)));
+    if (direct) {
+      direct.click();
+      return true;
+    }
+
+    const leaves = [...document.body.querySelectorAll("*")].filter((element) => {
+      if (!visible(element) || !(element.innerText || "").includes(filename)) return false;
+      return ![...element.children].some((child) => (child.innerText || "").includes(filename));
+    });
+    for (const leaf of leaves) {
+      let container = leaf;
+      for (let depth = 0; container && depth < 6; depth += 1, container = container.parentElement) {
+        const remove = [...container.querySelectorAll("button,[role=button]")]
+          .find((element) => visible(element) && removePattern.test(label(element)));
+        if (remove) {
+          remove.click();
+          return true;
+        }
+      }
+    }
+    return false;
+  })()`);
+}
+
+async function waitForFile(file, deadline, label) {
+  while (Date.now() <= deadline) {
+    if (fs.existsSync(file)) return;
+    await sleep(250);
+  }
+  fail(`${label} was not created: ${file}`);
+}
+
+async function exerciseNormalChat(cdp, deadline) {
+  await openNewThread(cdp);
+  const marker = `codex-normal-chat-${Date.now()}`;
+  await insertComposerText(cdp, `只回复 ${marker}，不要调用工具，不要拟定计划。`, marker);
+  await submitComposer(cdp, marker);
+  const snapshot = await waitForSnapshot(
+    cdp,
+    Math.min(deadline, deadlineFromNow(180_000)),
+    "normal chat response",
+    (value) => occurrenceCount(value.bodyText, marker) >= 2,
+  );
+  if (hasRawProposedPlan(snapshot)) fail("normal chat rendered raw proposed_plan markup");
+  const contexts = await markerContexts(cdp, marker);
+  if (markerContextLooksLikePlanUi(contexts, marker)) fail("normal chat response rendered in Plan UI");
+  return marker;
+}
+
+async function exerciseAttachments(cdp, workspace, deadline) {
+  await openNewThread(cdp);
+  const textFile = path.join(workspace.root, "attachment.txt");
+  const imageFile = path.join(workspace.root, "fixture.png");
+  await setFileInputFiles(cdp, [textFile, imageFile]);
+  await waitForSnapshot(
+    cdp,
+    deadlineFromNow(10_000),
+    "text and image attachment chips",
+    (snapshot) => snapshotHaystack(snapshot).includes("attachment.txt") && snapshotHaystack(snapshot).includes("fixture.png"),
+  );
+  if (!(await removeAttachment(cdp, "fixture.png"))) fail("image attachment remove action was not found");
+  await waitForSnapshot(
+    cdp,
+    deadlineFromNow(10_000),
+    "image attachment removal",
+    (snapshot) => !snapshot.bodyText.includes("fixture.png") && snapshot.bodyText.includes("attachment.txt"),
+  );
+  await setFileInputFiles(cdp, [imageFile]);
+  await waitForSnapshot(
+    cdp,
+    deadlineFromNow(10_000),
+    "image attachment re-addition",
+    (snapshot) => snapshot.bodyText.includes("attachment.txt") && snapshot.bodyText.includes("fixture.png"),
+  );
+
+  const marker = `attachment-observed-${Date.now()}`;
+  const prompt = `读取所附 attachment.txt，只回复 attachment-content-marker 和 ${marker}。`;
+  await insertComposerText(cdp, prompt, marker);
+  await submitComposer(cdp, marker);
+  await waitForSnapshot(
+    cdp,
+    Math.min(deadline, deadlineFromNow(180_000)),
+    "attachment content response",
+    (snapshot) =>
+      occurrenceCount(snapshot.bodyText, marker) >= 2 &&
+      occurrenceCount(snapshot.bodyText, "attachment-content-marker") >= 2,
+  );
+  return marker;
+}
+
+async function selectDefaultApprovals(cdp) {
+  const opened = await clickFirst(
+    cdp,
+    "change permissions|ask for approval|request approval|full access|approve for me|更改权限|请求批准|完全访问|替我审批|變更權限|請求批准|完整存取",
+  );
+  if (!opened) fail("permissions dropdown was not found");
+  await sleep(300);
+  const selected = await clickFirst(cdp, "ask for approval|request approval|请求批准|請求批准");
+  if (!selected) fail("default request-approval mode was not found");
+  await sleep(500);
+}
+
+async function exerciseApprovals(cdp, workspace, deadline) {
+  await selectDefaultApprovals(cdp);
+
+  const approvedFile = path.join(workspace.externalRoot, "approved.txt");
+  const approvedMarker = `approved-command-${Date.now()}`;
+  await openNewThread(cdp);
+  const approvedPrompt = `必须使用 shell 运行 printf '${approvedMarker}\\n' > '${approvedFile}'，不要使用其他方式。`;
+  await insertComposerText(cdp, approvedPrompt, approvedMarker);
+  await submitComposer(cdp, approvedMarker);
+  await waitForControl(
+    cdp,
+    /run once|run command|approve|allow once|运行一次|运行命令|批准|允许运行|執行一次|核准/i,
+    Math.min(deadline, deadlineFromNow(120_000)),
+    "command approval request",
+  );
+  if (!(await clickFirst(cdp, "run once|run command|approve|allow once|运行一次|运行命令|批准|允许运行|執行一次|核准"))) {
+    fail("command approval could not be accepted");
+  }
+  await waitForFile(approvedFile, Math.min(deadline, deadlineFromNow(60_000)), "approved command output");
+  if (fs.readFileSync(approvedFile, "utf8").trim() !== approvedMarker) fail("approved command output was incorrect");
+
+  const deniedFile = path.join(workspace.externalRoot, "denied.txt");
+  const deniedMarker = `denied-file-${Date.now()}`;
+  await openNewThread(cdp);
+  const deniedPrompt = `使用文件修改工具在 '${deniedFile}' 写入 ${deniedMarker}，不要使用 shell。`;
+  await insertComposerText(cdp, deniedPrompt, deniedMarker);
+  await submitComposer(cdp, deniedMarker);
+  await waitForControl(
+    cdp,
+    /apply changes|apply|approve|应用更改|应用|批准|套用變更|套用|核准/i,
+    Math.min(deadline, deadlineFromNow(120_000)),
+    "file approval request",
+  );
+  if (!(await clickFirst(cdp, "deny|decline|reject|拒绝|拒絕"))) fail("file approval decline action was not found");
+  await sleep(1_000);
+  if (fs.existsSync(deniedFile)) fail("declined file change was applied");
+}
+
+async function exerciseStop(cdp, workspace, deadline) {
+  await openNewThread(cdp);
+  const output = path.join(workspace.root, "cancelled-command.txt");
+  const marker = `cancelled-command-${Date.now()}`;
+  const prompt = `必须使用 shell 原样运行 sleep 15 && printf '${marker}\\n' > '${output}'。`;
+  await insertComposerText(cdp, prompt, marker);
+  await submitComposer(cdp, marker);
+  await waitForControl(
+    cdp,
+    /stop|cancel|停止|取消|終止/i,
+    Math.min(deadline, deadlineFromNow(90_000)),
+    "running task stop control",
+  );
+  if (!(await clickFirst(cdp, "stop|cancel|停止|取消|終止"))) fail("running task could not be stopped");
+  await sleep(16_000);
+  if (fs.existsSync(output)) fail("cancelled command still wrote its completion marker");
+}
+
+async function exerciseTerminal(cdp, deadline) {
+  const opened = await clickFirst(cdp, "terminal|终端|終端");
+  if (!opened) fail("terminal toggle was not found");
+  const marker = `terminal-marker-${Date.now()}`;
+  const focused = await cdp.evaluate(`(() => {
+    const input = document.querySelector(".xterm-helper-textarea, .xterm textarea, [data-codex-terminal] textarea");
+    if (!input) return false;
+    input.focus();
+    return document.activeElement === input;
+  })()`);
+  if (!focused) fail("terminal input was not available");
+  await cdp.send("Input.insertText", { text: `printf '${marker}\\n'` });
+  await dispatchKey(cdp, "Enter", "Enter", 13);
+  await waitForSnapshot(
+    cdp,
+    Math.min(deadline, deadlineFromNow(30_000)),
+    "terminal command output",
+    (snapshot) => snapshotHaystack(snapshot).includes(marker),
+  );
+  if (!(await clickFirst(cdp, "terminal|终端|終端"))) fail("terminal could not be closed");
 }
 
 async function waitForSnapshot(cdp, deadline, label, predicate) {
@@ -642,6 +1043,13 @@ async function exerciseMenu(cdp, patternSource, label) {
   await pressEscape(cdp);
 }
 
+async function exerciseToggle(cdp, patternSource, label) {
+  if (!(await clickFirst(cdp, patternSource))) fail(`${label} control was not found`);
+  await sleep(300);
+  if (!(await clickFirst(cdp, patternSource))) fail(`${label} control could not restore its initial state`);
+  await sleep(300);
+}
+
 async function exerciseComposerDraft(cdp) {
   const draft = `codex-smoke-${Date.now()}`;
   const focused = await cdp.evaluate(`(() => {
@@ -670,7 +1078,7 @@ async function exerciseComposerDraft(cdp) {
   if (cleared.includes(draft)) fail("temporary draft text was not cleared");
 }
 
-async function exercisePlanShortcut(cdp) {
+async function exercisePlanShortcut(cdp, required = false) {
   await cdp.evaluate(`(() => {
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     const button = document.querySelector("button,[role=button]");
@@ -678,29 +1086,33 @@ async function exercisePlanShortcut(cdp) {
     return true;
   })()`);
   const before = await cdp.evaluate(snapshotExpression());
-  if (!detectPlanMode(before)) {
-    console.log("  [skip] Plan mode control is not rendered in this UI state; plan-flow smoke validates it");
+  const hadPlanControl = detectPlanMode(before);
+  if (!hadPlanControl && !required) {
+    console.log("  [info] Plan mode control is not rendered in this UI state; dedicated Plan flow will validate it");
     await dispatchKey(cdp, "Tab", "Tab", 9, 8);
     await sleep(250);
     await dispatchKey(cdp, "Tab", "Tab", 9, 8);
     return;
   }
-  const initial = detectActivePlanMode(before);
+  const initial = hadPlanControl ? detectActivePlanMode(before) : false;
   await dispatchKey(cdp, "Tab", "Tab", 9, 8);
 
   let after = before;
   for (let i = 0; i < 12; i += 1) {
     await sleep(250);
     after = await cdp.evaluate(snapshotExpression());
-    if (detectActivePlanMode(after) !== initial) break;
+    if (detectActivePlanMode(after) !== initial || (!initial && detectPlanMode(after))) break;
   }
-  if (detectActivePlanMode(after) === initial) fail("Shift+Tab did not toggle Plan mode active state");
+  if (detectActivePlanMode(after) === initial && !(!initial && detectPlanMode(after))) {
+    fail("Shift+Tab did not toggle Plan mode active state");
+  }
+  const activationDetectedByPresence = !initial && !detectActivePlanMode(after) && detectPlanMode(after);
 
   await dispatchKey(cdp, "Tab", "Tab", 9, 8);
   for (let i = 0; i < 12; i += 1) {
     await sleep(250);
     after = await cdp.evaluate(snapshotExpression());
-    if (detectActivePlanMode(after) === initial) return;
+    if (activationDetectedByPresence ? !detectPlanMode(after) : detectActivePlanMode(after) === initial) return;
   }
   fail("Shift+Tab did not restore the original Plan mode state");
 }
@@ -723,14 +1135,19 @@ async function togglePlanModeShortcut(cdp) {
   await sleep(500);
 }
 
-async function exercisePlanFlow(cdp, deadline) {
+async function exercisePlanFlow(cdp, deadline, workspace = null) {
   await openNewThread(cdp);
   await togglePlanModeShortcut(cdp);
 
   const marker = `codex-plan-smoke-${Date.now()}`;
+  const implementationMarker = `codex-plan-implemented-${Date.now()}`;
+  const implementationFile = workspace ? path.join(workspace.root, "plan-result.txt") : null;
   const prompt = [
     "请只拟定一个两步计划，不要执行，不要修改文件。",
     `计划内容必须包含标识 ${marker}。`,
+    implementationFile
+      ? `计划在用户选择执行后，必须在 ${implementationFile} 写入 ${implementationMarker}。`
+      : "计划必须包含一个可以执行的验证步骤。",
     "计划必须很短。",
   ].join("\n");
   await insertComposerText(cdp, prompt, marker);
@@ -749,7 +1166,39 @@ async function exercisePlanFlow(cdp, deadline) {
     fail(`Plan marker was visible, but not inside the dedicated Plan summary UI${formatSnapshotForFailure(planSnapshot)}`);
   }
 
-  await togglePlanModeShortcut(cdp);
+  if (planSnapshot.editableCount < 1) fail("Plan completion UI does not allow additional user input");
+  const revisionMarker = `codex-plan-revision-${Date.now()}`;
+  await insertComposerText(
+    cdp,
+    `补充信息：请更新计划并在计划内容中加入 ${revisionMarker}，仍然不要执行。`,
+    revisionMarker,
+  );
+  await submitComposer(cdp, revisionMarker);
+  await waitForSnapshot(
+    cdp,
+    Math.min(deadline, deadlineFromNow(180_000)),
+    "revised Plan summary and implementation request UI",
+    (snapshot) => hasPlanSummaryUi(snapshot, revisionMarker) && hasImplementPlanRequest(snapshot),
+  );
+
+  if (workspace) {
+    const implemented = await clickFirst(
+      cdp,
+      "implement this plan|implement plan|yes, implement|执行此计划|执行计划|实施此计划|实施计划|執行此計劃|執行計劃|實施此計劃",
+    );
+    if (!implemented) fail("Plan implementation action was not found");
+    await waitForFile(
+      implementationFile,
+      Math.min(deadline, deadlineFromNow(180_000)),
+      "Plan implementation output",
+    );
+    if (fs.readFileSync(implementationFile, "utf8").trim() !== implementationMarker) {
+      fail("Plan implementation output was incorrect");
+    }
+  }
+
+  const beforeExit = await cdp.evaluate(snapshotExpression());
+  if (detectActivePlanMode(beforeExit)) await togglePlanModeShortcut(cdp);
 
   const chatMarker = `codex-chat-smoke-${Date.now()}`;
   await insertComposerText(cdp, `请只回复 ${chatMarker}，不要拟定计划，不要执行任何操作。`, chatMarker);
@@ -758,13 +1207,14 @@ async function exercisePlanFlow(cdp, deadline) {
     cdp,
     Math.min(deadline, deadlineFromNow(180_000)),
     "default-mode follow-up response after exiting Plan mode",
-    (snapshot) => snapshotHaystack(snapshot).includes(chatMarker),
+    (snapshot) => occurrenceCount(snapshot.bodyText, chatMarker) >= 2,
   );
   if (hasRawProposedPlan(chatSnapshot)) fail("raw <proposed_plan> tags appeared after exiting Plan mode");
   const chatContexts = await markerContexts(cdp, chatMarker);
   if (markerContextLooksLikePlanUi(chatContexts, chatMarker)) {
     fail("Shift+Tab did not exit Plan mode; follow-up response rendered as a Plan summary");
   }
+  return chatMarker;
 }
 
 async function exerciseCoreUi(cdp, mode) {
@@ -775,22 +1225,53 @@ async function exerciseCoreUi(cdp, mode) {
 
   if (!hasControl(snapshot, /sidebar|侧边栏|側邊欄/i)) fail("sidebar toggle control was not found");
 
+  if (mode === "core") await openNewThread(cdp);
   await exerciseComposerDraft(cdp);
-  await exercisePlanShortcut(cdp);
-  await exerciseMenu(cdp, "sidebar|侧边栏|側邊欄", "sidebar toggle");
+  await exercisePlanShortcut(cdp, mode === "core");
+  await exerciseToggle(cdp, "sidebar|侧边栏|側邊欄", "sidebar toggle");
   if (hasControl(await cdp.evaluate(snapshotExpression()), /bottom panel|底部面板|下方面板/i)) {
-    await exerciseMenu(cdp, "bottom panel|底部面板|下方面板", "bottom panel toggle");
+    await exerciseToggle(cdp, "bottom panel|底部面板|下方面板", "bottom panel toggle");
+  } else if (mode === "core") {
+    fail("bottom panel toggle is not rendered in the required core UI state");
   } else {
-    console.log("  [skip] bottom panel toggle is not rendered in this UI state");
+    console.log("  [info] bottom panel toggle is not rendered in this UI state");
   }
   await exerciseMenu(cdp, "project|项目|專案", "project/menu");
   await exerciseMenu(cdp, "approval|approve|审批|審批|替我审批", "approval menu");
 
-  if (mode !== "real") {
+  if (mode === "core") {
+    await exerciseMenu(cdp, "settings|设置|設定", "settings");
+    await exerciseMenu(
+      cdp,
+      "select model|model picker|model|\\b\\d+\\.\\d+\\b|sol|选择模型|模型|選擇模型",
+      "model picker",
+    );
+    const controls = await cdp.evaluate(snapshotExpression());
+    if (!hasControl(controls, /fast|快速|enable now|立即启用|立即啟用/i)) fail("Fast mode control was not found");
+    if (!hasControl(controls, /reasoning|effort|推理|思考|low|medium|high|低|中|高/i)) {
+      fail("reasoning effort control was not found");
+    }
+  }
+
+  if (mode !== "real" && mode !== "core") {
     await openNewThread(cdp);
     await dispatchKey(cdp, "n", "KeyN", 78, 3);
     await sleep(500);
   }
+}
+
+async function exerciseCoreFlow(cdp, workspace, deadline, runStep = async (_name, action) => action()) {
+  const initial = await cdp.evaluate(snapshotExpression());
+  if (!snapshotHaystack(initial).includes(path.basename(workspace.root))) {
+    fail(`opened project does not show workspace ${path.basename(workspace.root)}`);
+  }
+  await runStep("normal-chat", () => exerciseNormalChat(cdp, deadline));
+  await runStep("attachments", () => exerciseAttachments(cdp, workspace, deadline));
+  await runStep("approvals", () => exerciseApprovals(cdp, workspace, deadline));
+  await runStep("terminal", () => exerciseTerminal(cdp, deadline));
+  await runStep("stop-cancel", () => exerciseStop(cdp, workspace, deadline));
+  const persistenceMarker = await runStep("plan-flow", () => exercisePlanFlow(cdp, deadline, workspace));
+  return { persistenceMarker };
 }
 
 async function runSmoke(options) {
@@ -802,63 +1283,174 @@ async function runSmoke(options) {
   const appPath = options.appPath || appPathForPlatform(platform);
   if (!fs.existsSync(appPath)) fail(`Missing app executable ${rel(appPath)}; run npm run build first`);
 
-  const port = options.port || (await findFreePort());
-  const deadline = deadlineFromNow(options.timeoutMs || DEFAULT_TIMEOUT_MS);
+  const timeoutMs = options.timeoutMs || (mode === "core" ? 15 * 60_000 : DEFAULT_TIMEOUT_MS);
+  const deadline = deadlineFromNow(timeoutMs);
   const profile = createProfile(mode, { keepProfile: options.keepProfile });
-  const logs = createLogMonitor();
-  let cdp = null;
-  let child = null;
+  const workspace = mode === "core" ? createTestWorkspace() : null;
+  const reportDir = options.reportDir ? path.resolve(options.reportDir) : null;
+  const report = {
+    appPath,
+    finishedAt: null,
+    mode,
+    platform,
+    runId: options.runId || `smoke-${Date.now()}`,
+    schemaVersion: 1,
+    startedAt: new Date().toISOString(),
+    status: "running",
+    steps: [],
+  };
+  let combinedLogs = "";
+  let current = null;
+  let failure = null;
+
+  async function launch() {
+    const port = current == null && options.port ? options.port : await findFreePort();
+    const logs = createLogMonitor();
+    let child = null;
+    let cdp = null;
+    try {
+      console.log(`-- smoke-linux-desktop: ${mode} (${platform}, port ${port})`);
+      const args = ["--no-sandbox", "--password-store=basic", `--remote-debugging-port=${port}`];
+      if (workspace) args.push("--open-project", workspace.root);
+      child = spawn(appPath, args, {
+        cwd: workspace?.root || PROJECT_ROOT,
+        detached: true,
+        env: profile.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      child.stdout.on("data", logs.push);
+      child.stderr.on("data", logs.push);
+      child.on("exit", (code, signal) => logs.push(`\n[smoke] app exited code=${code} signal=${signal}\n`));
+
+      const target = await waitForCdpTarget(port, deadline);
+      cdp = await connectCdp(target.webSocketDebuggerUrl);
+      await cdp.send("Runtime.enable");
+      await cdp.send("Page.enable");
+      await cdp.send("Page.bringToFront");
+      try {
+        const { windowId } = await cdp.send("Browser.getWindowForTarget");
+        await cdp.send("Browser.setWindowBounds", {
+          bounds: { height: 1000, left: 20, top: 20, width: 1440, windowState: "normal" },
+          windowId,
+        });
+      } catch {
+        // Window sizing is evidence stabilization; the UI assertions remain authoritative.
+      }
+      await waitForLog(logs, /window ready-to-show/, deadline, "main window ready-to-show");
+      await waitForLog(logs, /initialize_handshake_result[^\n]*outcome=success/, deadline, "app-server handshake");
+      logs.assertNoFatal();
+      return { cdp, child, logs };
+    } catch (error) {
+      if (cdp) cdp.close();
+      if (child) await stopProcess(child);
+      combinedLogs += logs.text();
+      throw error;
+    }
+  }
+
+  async function closeCurrent() {
+    if (!current) return;
+    if (current.cdp) current.cdp.close();
+    if (current.child) await stopProcess(current.child);
+    combinedLogs += current.logs.text();
+    current = null;
+  }
+
+  async function runStep(name, action) {
+    const step = { durationMs: null, evidence: [], name, startedAt: new Date().toISOString(), status: "running" };
+    const started = Date.now();
+    report.steps.push(step);
+    try {
+      const result = await action();
+      if (current?.cdp && reportDir) {
+        const screenshot = await captureScreenshot(current.cdp, reportDir, `${report.steps.length}-${name}`);
+        if (screenshot) step.evidence.push(screenshot);
+      }
+      step.status = "passed";
+      return result;
+    } catch (error) {
+      step.status = "failed";
+      step.error = redactLog(error.message);
+      if (current?.cdp && reportDir) {
+        try {
+          const screenshot = await captureScreenshot(current.cdp, reportDir, `${report.steps.length}-${name}-failed`);
+          if (screenshot) step.evidence.push(screenshot);
+        } catch {}
+      }
+      throw error;
+    } finally {
+      step.durationMs = Date.now() - started;
+    }
+  }
 
   try {
-    console.log(`-- smoke-linux-desktop: ${mode} (${platform}, port ${port})`);
-    child = spawn(appPath, ["--no-sandbox", `--remote-debugging-port=${port}`], {
-      cwd: PROJECT_ROOT,
-      detached: true,
-      env: profile.env,
-      stdio: ["ignore", "pipe", "pipe"],
+    await runStep("startup", async () => {
+      current = await launch();
     });
-    child.stdout.on("data", logs.push);
-    child.stderr.on("data", logs.push);
-    child.on("exit", (code, signal) => {
-      logs.push(`\n[smoke] app exited code=${code} signal=${signal}\n`);
-    });
+    await runStep("core-ui", () => exerciseCoreUi(current.cdp, mode));
 
-    const target = await waitForCdpTarget(port, deadline);
-    cdp = await connectCdp(target.webSocketDebuggerUrl);
-    await cdp.send("Runtime.enable");
-    await cdp.send("Page.bringToFront");
-
-    await waitForLog(logs, /window ready-to-show/, deadline, "main window ready-to-show");
-    await waitForLog(logs, /initialize_handshake_result[^\n]*outcome=success/, deadline, "app-server handshake");
-    assertNotExpired(deadline, "smoke-linux-desktop");
-    logs.assertNoFatal();
-
-    await exerciseCoreUi(cdp, mode);
-    if (mode === "plan-flow") {
-      await exercisePlanFlow(cdp, deadline);
+    if (mode === "plan-flow") await runStep("plan-flow", () => exercisePlanFlow(current.cdp, deadline));
+    if (mode === "core") {
+      const { persistenceMarker } = await exerciseCoreFlow(current.cdp, workspace, deadline, runStep);
+      await runStep("conversation-restart", async () => {
+        await closeCurrent();
+        current = await launch();
+        const snapshot = await waitForUiSnapshot(current.cdp, mode, deadlineFromNow(30_000));
+        assertCoreUi(snapshot, mode);
+        await waitForSnapshot(
+          current.cdp,
+          Math.min(deadline, deadlineFromNow(60_000)),
+          "restored test conversation",
+          (value) => value.bodyText.includes(persistenceMarker),
+        );
+      });
     }
-    logs.assertNoFatal();
-
+    current.logs.assertNoFatal();
+    report.status = "passed";
     console.log(`  [ok] ${mode} smoke passed`);
   } catch (error) {
-    const excerpt = logs.text() ? `\n--- recent app log ---\n${redactLog(logs.text()).slice(-8000)}` : "";
-    error.message = `${error.message}${excerpt}`;
-    throw error;
+    failure = error;
+    report.status = "failed";
+    report.error = redactLog(error.message);
   } finally {
-    if (cdp) cdp.close();
-    if (child) await stopProcess(child);
-    profile.cleanup();
+    await closeCurrent();
+    if (reportDir) {
+      fs.mkdirSync(reportDir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(reportDir, "app.log"), redactLog(combinedLogs), { mode: 0o600 });
+    }
+    for (const cleanup of [() => profile.cleanup(), () => workspace?.cleanup()]) {
+      try {
+        cleanup();
+      } catch (error) {
+        if (!failure) failure = error;
+        report.status = "failed";
+        report.error = redactLog(error.message);
+      }
+    }
+    report.finishedAt = new Date().toISOString();
+    if (reportDir) writeJson(path.join(reportDir, "smoke-report.json"), report);
   }
+
+  if (failure) {
+    const excerpt = combinedLogs ? `\n--- recent app log ---\n${redactLog(combinedLogs).slice(-8000)}` : "";
+    failure.message = `${failure.message}${excerpt}`;
+    throw failure;
+  }
+  return report;
 }
 
 async function main() {
+  const mode = argValue("--mode", "safe");
+  const timeoutArg = argValue("--timeout-ms", null);
   await runSmoke({
     appPath: argValue("--app", null),
     keepProfile: hasFlag("--keep-profile"),
-    mode: argValue("--mode", "safe"),
+    mode,
     platform: argValue("--platform", "linux-x64"),
     port: Number(argValue("--port", "0")) || null,
-    timeoutMs: Number(argValue("--timeout-ms", String(DEFAULT_TIMEOUT_MS))),
+    reportDir: argValue("--report-dir", null),
+    runId: argValue("--run-id", null),
+    timeoutMs: timeoutArg == null ? null : Number(timeoutArg),
   });
 }
 
@@ -874,11 +1466,15 @@ module.exports = {
   controlHaystack,
   createLogMonitor,
   createProfile,
+  createTestWorkspace,
   detectActivePlanMode,
   detectPlanMode,
   extractProposedPlan,
   formatSnapshotForFailure,
+  fingerprintProfileSources,
+  occurrenceCount,
   redactLog,
   runSmoke,
   shouldCopyProfilePath,
+  writeJson,
 };

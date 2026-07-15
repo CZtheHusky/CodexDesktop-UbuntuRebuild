@@ -1,24 +1,54 @@
 #!/usr/bin/env node
-/**
- * Verify the local build-history contract after a successful Linux build.
- */
+/** Verify candidate or accepted local build-history contracts. */
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const {
+  ACCEPTED_ROOT,
+  CANDIDATE_ROOT,
+  currentVersionName,
+  historyRootFor,
+  safeSegment,
+  sha256File,
+} = require("./archive-build-history");
 
 const PROJECT_ROOT = path.join(__dirname, "..");
-const HISTORY_ROOT = path.join(PROJECT_ROOT, "build-history", "codex-desktop");
-const MAX_VERSION_HISTORY = 3;
+const MAX_HISTORY = { accepted: 3, candidate: 1 };
+const VALID_CHANNELS = new Set(["accepted", "candidate"]);
 const VALID_PLATFORMS = new Set(["linux-x64", "linux-arm64"]);
+const REQUIRED_ACCEPTANCE_STAGES = [
+  "preflight",
+  "unit-tests",
+  "candidate-build",
+  "generated-syntax",
+  "candidate-history",
+  "candidate-empty-profile",
+  "install-candidate",
+  "installed-core-ui",
+];
+const REQUIRED_CORE_STEPS = [
+  "startup",
+  "core-ui",
+  "normal-chat",
+  "attachments",
+  "approvals",
+  "terminal",
+  "stop-cancel",
+  "plan-flow",
+  "conversation-restart",
+];
 
 function argValue(name, fallback) {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : fallback;
 }
 
+function hasFlag(name) {
+  return process.argv.includes(name);
+}
+
 function fail(message) {
-  console.error(`[x] ${message}`);
-  process.exit(1);
+  throw new Error(message);
 }
 
 function ok(message) {
@@ -29,26 +59,16 @@ function rel(file) {
   return path.relative(PROJECT_ROOT, file);
 }
 
-function safeSegment(value) {
-  return String(value).replace(/[^a-zA-Z0-9._+-]/g, "_");
-}
-
 function archDirFor(platform) {
   return platform === "linux-arm64" ? "arm64" : "x64";
 }
 
 function readPackageInfo() {
   const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8"));
-  if (!pkg.version) fail("package.json is missing version");
   return {
-    version: String(pkg.version),
     buildNumber: pkg.codexBuildNumber == null ? "" : String(pkg.codexBuildNumber),
+    version: String(pkg.version),
   };
-}
-
-function currentVersionName() {
-  const { version, buildNumber } = readPackageInfo();
-  return safeSegment(buildNumber ? `${version}+${buildNumber}` : version);
 }
 
 function readJson(file) {
@@ -59,72 +79,151 @@ function readJson(file) {
   }
 }
 
-function listVersionDirs() {
-  if (!fs.existsSync(HISTORY_ROOT)) return [];
+function listVersionDirs(channel = "accepted") {
+  const root = historyRootFor(channel);
+  if (!fs.existsSync(root)) return [];
   return fs
-    .readdirSync(HISTORY_ROOT, { withFileTypes: true })
+    .readdirSync(root, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
-    .map((entry) => path.join(HISTORY_ROOT, entry.name))
+    .map((entry) => path.join(root, entry.name))
     .sort();
 }
 
 function assertIgnored() {
-  try {
-    execFileSync("git", ["check-ignore", "-q", "build-history/"], { cwd: PROJECT_ROOT, stdio: "ignore" });
-  } catch {
-    fail("build-history/ is not ignored by git");
+  for (const target of ["build-history/", "build-history/candidates/"]) {
+    try {
+      execFileSync("git", ["check-ignore", "-q", target], { cwd: PROJECT_ROOT, stdio: "ignore" });
+    } catch {
+      fail(`${target} is not ignored by git`);
+    }
   }
-  ok("build-history/ is ignored by git");
+  ok("build history roots are ignored by git");
 }
 
 function findDeb(platformDir, platform) {
   const debDir = path.join(platformDir, "make", "deb", archDirFor(platform));
   if (!fs.existsSync(debDir)) fail(`Missing deb history dir: ${rel(debDir)}`);
-  return fs.readdirSync(debDir).filter((name) => name.endsWith(".deb"));
+  const debs = fs.readdirSync(debDir).filter((name) => name.endsWith(".deb"));
+  if (debs.length !== 1) fail(`Expected one deb under ${rel(debDir)}, found ${debs.length}`);
+  return path.join(debDir, debs[0]);
 }
 
-function verify(platform) {
-  console.log(`-- verify-build-history: ${platform}`);
-  if (!VALID_PLATFORMS.has(platform)) fail(`Unsupported --platform ${platform}`);
+function assertRequiredPassed(entries, requiredNames, label) {
+  if (!Array.isArray(entries)) fail(`${label} results are missing`);
+  const skipped = entries.find((entry) => entry.status === "skipped");
+  if (skipped) fail(`${label} contains skipped result ${skipped.name || "unknown"}`);
+  const names = new Set();
+  for (const entry of entries) {
+    if (!entry?.name) fail(`${label} contains an unnamed result`);
+    if (names.has(entry.name)) fail(`${label} contains duplicate result ${entry.name}`);
+    names.add(entry.name);
+  }
+  for (const name of requiredNames) {
+    const entry = entries.find((candidate) => candidate.name === name);
+    if (!entry) fail(`${label} is missing required result ${name}`);
+    if (entry.status !== "passed") fail(`${label} result ${name} is ${entry.status || "missing status"}`);
+  }
+}
 
+function verify(options) {
+  const { channel = "accepted", platform = "linux-x64", skipRetention = false } = options;
+  console.log(`-- verify-build-history: ${channel} ${platform}`);
+  if (!VALID_CHANNELS.has(channel)) fail(`Unsupported --channel ${channel}`);
+  if (!VALID_PLATFORMS.has(platform)) fail(`Unsupported --platform ${platform}`);
   assertIgnored();
 
-  const versionDirs = listVersionDirs();
-  if (versionDirs.length === 0) fail("build-history/codex-desktop contains no archived versions");
-  if (versionDirs.length > MAX_VERSION_HISTORY) {
-    fail(`build history keeps ${versionDirs.length} versions; expected at most ${MAX_VERSION_HISTORY}`);
+  const versionDirs = listVersionDirs(channel);
+  if (versionDirs.length === 0) fail(`${channel} build history contains no versions`);
+  if (!skipRetention && versionDirs.length > MAX_HISTORY[channel]) {
+    fail(`${channel} history keeps ${versionDirs.length} versions; expected at most ${MAX_HISTORY[channel]}`);
   }
-  ok(`build history keeps ${versionDirs.length} version(s)`);
+  if (!skipRetention) ok(`${channel} history keeps ${versionDirs.length} version(s)`);
 
-  const versionDir = path.join(HISTORY_ROOT, currentVersionName());
-  if (!fs.existsSync(versionDir)) fail(`Missing current version history dir: ${rel(versionDir)}`);
-
+  const versionDir = path.join(historyRootFor(channel), currentVersionName());
+  if (!fs.existsSync(versionDir)) fail(`Missing current ${channel} version: ${rel(versionDir)}`);
   const manifestPath = path.join(versionDir, "manifest.json");
-  if (!fs.existsSync(manifestPath)) fail(`Missing history manifest: ${rel(manifestPath)}`);
   const manifest = readJson(manifestPath);
-  if (manifest.version !== readPackageInfo().version) fail("history manifest version does not match package.json");
-  if (!manifest.platforms || !manifest.platforms[platform]) fail(`history manifest is missing platform ${platform}`);
-  if (!Array.isArray(manifest.platforms[platform].files) || manifest.platforms[platform].files.length === 0) {
-    fail(`history manifest has no archived files for ${platform}`);
+  const packageInfo = readPackageInfo();
+  if (manifest.version !== packageInfo.version || manifest.buildNumber !== packageInfo.buildNumber) {
+    fail(`${channel} manifest version does not match package.json`);
   }
+  if (manifest.channel !== channel || manifest.status !== channel) fail(`${channel} manifest status is invalid`);
+  if (
+    !manifest.git?.commit ||
+    !manifest.git?.branch ||
+    manifest.git.commit === "unknown" ||
+    manifest.git.branch === "unknown"
+  ) {
+    fail(`${channel} manifest is missing Git identity`);
+  }
+  const platformEntry = manifest.platforms?.[platform];
+  if (!platformEntry?.files?.length) fail(`${channel} manifest has no files for ${platform}`);
 
   const platformDir = path.join(versionDir, platform);
-  if (!fs.existsSync(platformDir)) fail(`Missing platform history dir: ${rel(platformDir)}`);
+  const deb = findDeb(platformDir, platform);
+  const manifestDeb = platformEntry.files.find((entry) => entry.path.endsWith(".deb"));
+  if (!manifestDeb || manifestDeb.sha256 !== sha256File(deb)) fail(`${channel} deb SHA-256 does not match manifest`);
 
-  const debs = findDeb(platformDir, platform);
-  if (debs.length === 0) fail(`No deb package archived under ${rel(platformDir)}`);
-  ok(`archived ${debs.length} deb package(s) for current ${platform} build`);
+  if (channel === "accepted") {
+    const reportPath = manifest.acceptance?.report && path.join(versionDir, manifest.acceptance.report);
+    if (!reportPath || !fs.existsSync(reportPath)) fail("accepted history is missing its acceptance report");
+    const report = readJson(reportPath);
+    if (report.status !== "passed") fail("accepted history references a non-passing report");
+    if (report.git?.commit !== manifest.git.commit) fail("accepted report commit does not match history manifest");
+    if (
+      report.app?.version !== manifest.version ||
+      report.app?.buildNumber !== manifest.buildNumber ||
+      report.app?.cliVersion !== manifest.cliVersion
+    ) {
+      fail("accepted report app identity does not match history manifest");
+    }
+    if (report.install?.candidateSha256 !== sha256File(deb)) {
+      fail("accepted report candidate SHA-256 does not match archived deb");
+    }
+    if (report.install?.afterVersion !== manifest.version) {
+      fail("accepted report does not confirm the installed candidate version");
+    }
+    assertRequiredPassed(report.stages, REQUIRED_ACCEPTANCE_STAGES, "acceptance stages");
+
+    const coreReportPath = path.join(path.dirname(reportPath), "installed-core", "smoke-report.json");
+    if (!fs.existsSync(coreReportPath)) fail("accepted history is missing the installed core UI report");
+    const coreReport = readJson(coreReportPath);
+    if (coreReport.status !== "passed") fail("installed core UI report did not pass");
+    if (coreReport.appPath !== "/usr/bin/codex-desktop") {
+      fail("installed core UI report did not exercise /usr/bin/codex-desktop");
+    }
+    assertRequiredPassed(coreReport.steps, REQUIRED_CORE_STEPS, "installed core UI scenarios");
+  }
+  ok(`${channel} ${platform} artifact and manifest are valid`);
+  return { deb, manifest, versionDir };
 }
 
 function main() {
-  verify(argValue("--platform", "linux-x64"));
+  verify({
+    channel: argValue("--channel", "accepted"),
+    platform: argValue("--platform", "linux-x64"),
+    skipRetention: hasFlag("--skip-retention"),
+  });
 }
 
-if (require.main === module) main();
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    console.error(`[x] ${error.message}`);
+    process.exit(1);
+  }
+}
 
 module.exports = {
+  ACCEPTED_ROOT,
+  CANDIDATE_ROOT,
+  REQUIRED_ACCEPTANCE_STAGES,
+  REQUIRED_CORE_STEPS,
   archDirFor,
+  assertRequiredPassed,
   currentVersionName,
+  findDeb,
   listVersionDirs,
   safeSegment,
   verify,
