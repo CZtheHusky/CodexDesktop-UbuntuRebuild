@@ -17,7 +17,8 @@ This command runs:
 4. Generated JavaScript syntax checks.
 5. GUI smoke with an empty temporary profile.
 6. GUI smoke with a temporary clone of the local Codex profile.
-7. Build history contract verification.
+7. GUI smoke with a temporary auth clone that submits a real Plan-mode prompt.
+8. Build history contract verification.
 
 Any failure blocks the adaptation. Do not install or archive a failed build as a
 known-good local version.
@@ -34,14 +35,21 @@ cache and singleton-lock files, runs the smoke tests, then deletes the temporary
 profile. This avoids a fresh login while keeping the user's live profile out of
 the test process.
 
+`smoke:linux:plan-flow` uses the same temporary auth clone, then submits a short
+Plan-mode prompt with a unique marker. It verifies that the response renders as
+a Plan summary instead of raw `<proposed_plan>` text, that the implementation
+request UI appears, and that `Shift+Tab` exits Plan mode. It can consume a small
+amount of model usage.
+
 `smoke:linux:real` uses the live profile and is intentionally gated:
 
 ```bash
 CODEX_DESKTOP_SMOKE_REAL_PROFILE=1 npm run smoke:linux:real
 ```
 
-Use it only for explicit final confirmation. The smoke script does not submit
-prompts, and it skips shortcut paths that would create tasks in the real profile.
+Use it only for explicit final confirmation. The real-profile smoke mode does
+not submit prompts, and it skips shortcut paths that would create tasks in the
+real profile.
 
 ## Acceptance Coverage
 
@@ -64,6 +72,9 @@ The GUI smoke gates verify:
 - Auth-clone mode can see the main Codex UI, composer, sidebar, and controls.
 - Composer can focus, accept a temporary draft, and clear it.
 - `Shift+Tab` toggles Plan mode and restores the initial state.
+- Plan mode can submit a real prompt, render the dedicated Plan summary layout,
+  show the implement-plan waiting request, and hide raw `<proposed_plan>` tags.
+- `Shift+Tab` exits Plan mode after the Plan flow.
 - Sidebar, project, and approval controls can be opened/closed.
 - Bottom panel controls are opened/closed when rendered in the current UI state.
 

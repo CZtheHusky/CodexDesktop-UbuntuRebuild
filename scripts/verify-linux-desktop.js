@@ -302,6 +302,58 @@ function findPlanModeCommandBundles() {
   return bundles;
 }
 
+function findPlanModeProposedPlanBundle() {
+  const assetsDir = path.join(SRC, "webview", "assets");
+  assert(fs.existsSync(assetsDir), `Missing Linux webview assets dir: ${rel(assetsDir)}`);
+
+  const candidates = fs
+    .readdirSync(assetsDir)
+    .filter((name) => name.endsWith(".js"))
+    .map((name) => path.join(assetsDir, name));
+
+  for (const file of candidates) {
+    const code = fs.readFileSync(file, "utf8");
+    if (
+      code.includes("function GB(e){for(let t=e.items.length-1") &&
+      code.includes("case`plan`:{let r=e.status===`inProgress`") &&
+      code.includes("type:`planImplementation`")
+    ) {
+      return { file, code };
+    }
+    if (code.includes("__codexDesktopLinuxExtractProposedPlan")) {
+      return { file, code };
+    }
+  }
+
+  fail("Could not locate Plan mode proposed_plan renderer bundle");
+}
+
+function findPlanModeCollaborationModesBundle() {
+  const assetsDir = path.join(SRC, "webview", "assets");
+  assert(fs.existsSync(assetsDir), `Missing Linux webview assets dir: ${rel(assetsDir)}`);
+
+  const candidates = fs
+    .readdirSync(assetsDir)
+    .filter((name) => name.endsWith(".js"))
+    .map((name) => path.join(assetsDir, name));
+
+  for (const file of candidates) {
+    const code = fs.readFileSync(file, "utf8");
+    if (
+      code.includes("function qae(e){let t=e.mode;return t==null||t===`plan`||t===`default`") &&
+      code.includes("queryFn:async()=>Jae((await jt(`list-collaboration-modes`") &&
+      code.includes("function Zb(e,t){")
+    ) {
+      return { file, code };
+    }
+    if (code.includes("__codexDesktopLinuxPlanModeFallback")) {
+      return { file, code };
+    }
+  }
+
+  fail("Could not locate Plan mode collaboration modes bundle");
+}
+
 function verifyPrepared() {
   console.log("-- verify-linux-desktop: prepared");
 
@@ -445,6 +497,27 @@ function verifyPrepared() {
     );
   }
   ok(`Plan mode Shift+Tab shortcut is present in ${planModeBundles.length} bundle(s)`);
+  const proposedPlanBundle = findPlanModeProposedPlanBundle();
+  assert(
+    proposedPlanBundle.code.includes("__codexDesktopLinuxExtractProposedPlan") &&
+      proposedPlanBundle.code.includes("__codexDesktopLinuxPlan") &&
+      proposedPlanBundle.code.includes("type:`implementPlan`,id:dB(e.turnId),turnId:e.turnId,planContent:r") &&
+      proposedPlanBundle.code.includes("type:`proposed-plan`,content:__codexDesktopLinuxPlan"),
+    "Plan mode raw proposed_plan renderer fallback is missing"
+  );
+  ok(`Plan mode raw proposed_plan fallback is present in ${rel(proposedPlanBundle.file)}`);
+  const collaborationModesBundle = findPlanModeCollaborationModesBundle();
+  assert(
+    collaborationModesBundle.code.includes("__codexDesktopLinuxPlanModeFallback") &&
+      collaborationModesBundle.code.includes("mode:`plan`,settings:{...h.settings,developer_instructions:null}") &&
+      collaborationModesBundle.code.includes("mode:`default`,settings:{...h.settings,developer_instructions:null}"),
+    "Plan/default collaboration modes fallback is missing"
+  );
+  assert(
+    collaborationModesBundle.code.includes("__codexDesktopLinuxPlanModeShiftTab"),
+    "Plan mode Shift+Tab renderer fallback is missing"
+  );
+  ok(`Plan/default collaboration modes fallback is present in ${rel(collaborationModesBundle.file)}`);
   ok("Linux runtime bundle patches are present");
 
   assert(!fs.existsSync(path.join(SRC, "cua_node")), "Flat Linux src/ must not contain cua_node");
@@ -640,6 +713,23 @@ function verifyPackage(platform) {
     assert(
       !appAsarContent.includes(Buffer.from(PLAN_MODE_COMMAND_WITH_BROKEN_SHIFT_TAB)),
       "Packaged app.asar still contains broken Plan mode Shift+Tab command registration"
+    );
+    assert(
+      appAsarContent.includes(Buffer.from("__codexDesktopLinuxExtractProposedPlan")) &&
+        appAsarContent.includes(Buffer.from("__codexDesktopLinuxPlan")) &&
+        appAsarContent.includes(Buffer.from("type:`implementPlan`,id:dB(e.turnId),turnId:e.turnId,planContent:r")) &&
+        appAsarContent.includes(Buffer.from("type:`proposed-plan`,content:__codexDesktopLinuxPlan")),
+      "Packaged app.asar is missing Plan mode raw proposed_plan renderer fallback"
+    );
+    assert(
+      appAsarContent.includes(Buffer.from("__codexDesktopLinuxPlanModeFallback")) &&
+        appAsarContent.includes(Buffer.from("mode:`plan`,settings:{...h.settings,developer_instructions:null}")) &&
+        appAsarContent.includes(Buffer.from("mode:`default`,settings:{...h.settings,developer_instructions:null}")),
+      "Packaged app.asar is missing Plan/default collaboration modes fallback"
+    );
+    assert(
+      appAsarContent.includes(Buffer.from("__codexDesktopLinuxPlanModeShiftTab")),
+      "Packaged app.asar is missing Plan mode Shift+Tab renderer fallback"
     );
     const codexBinary = path.join(resources, "codex");
     assert(fs.existsSync(codexBinary), "Packaged Codex CLI binary is missing");

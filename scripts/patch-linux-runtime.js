@@ -217,6 +217,54 @@ function findPlanModeCommandBundles() {
   return bundles;
 }
 
+function findPlanModeProposedPlanBundle() {
+  if (!fs.existsSync(WEBVIEW_ASSETS_DIR)) {
+    fail(`Missing webview assets dir: ${path.relative(PROJECT_ROOT, WEBVIEW_ASSETS_DIR)}`);
+  }
+
+  const candidates = fs
+    .readdirSync(WEBVIEW_ASSETS_DIR)
+    .filter((name) => name.endsWith(".js"))
+    .map((name) => path.join(WEBVIEW_ASSETS_DIR, name));
+
+  for (const file of candidates) {
+    const code = fs.readFileSync(file, "utf8");
+    if (
+      code.includes("function GB(e){for(let t=e.items.length-1") &&
+      code.includes("case`plan`:{let r=e.status===`inProgress`") &&
+      code.includes("type:`planImplementation`")
+    ) {
+      return file;
+    }
+  }
+
+  fail("Could not locate Plan mode proposed_plan renderer bundle");
+}
+
+function findPlanModeCollaborationModesBundle() {
+  if (!fs.existsSync(WEBVIEW_ASSETS_DIR)) {
+    fail(`Missing webview assets dir: ${path.relative(PROJECT_ROOT, WEBVIEW_ASSETS_DIR)}`);
+  }
+
+  const candidates = fs
+    .readdirSync(WEBVIEW_ASSETS_DIR)
+    .filter((name) => name.endsWith(".js"))
+    .map((name) => path.join(WEBVIEW_ASSETS_DIR, name));
+
+  for (const file of candidates) {
+    const code = fs.readFileSync(file, "utf8");
+    if (
+      code.includes("function qae(e){let t=e.mode;return t==null||t===`plan`||t===`default`") &&
+      code.includes("queryFn:async()=>Jae((await jt(`list-collaboration-modes`") &&
+      code.includes("function Zb(e,t){")
+    ) {
+      return file;
+    }
+  }
+
+  fail("Could not locate Plan mode collaboration modes bundle");
+}
+
 function replaceOnce(code, needle, replacement, label) {
   const first = code.indexOf(needle);
   if (first < 0) fail(`${label}: patch anchor not found`);
@@ -732,6 +780,67 @@ function patchPlanModeShortcut(code) {
   );
 }
 
+function patchPlanModeProposedPlanFallback(code) {
+  const helperName = "__codexDesktopLinuxExtractProposedPlan";
+  if (code.includes(helperName)) {
+    if (
+      code.includes("__codexDesktopLinuxPlan") &&
+      code.includes("type:`implementPlan`,id:dB(e.turnId),turnId:e.turnId,planContent:r")
+    ) {
+      console.log("  [ok] Plan mode proposed_plan fallback already patched");
+      return code;
+    }
+    fail("Plan mode proposed_plan fallback is only partially patched");
+  }
+
+  const pendingRequestNeedle =
+    "function GB(e){for(let t=e.items.length-1;t>=0;--t){let n=e.items[t];if(n!=null&&n.type===`planImplementation`)return n.isCompleted?null:{type:`implementPlan`,id:dB(n.turnId),turnId:n.turnId,planContent:n.planContent}}return null}";
+  const pendingRequestReplacement =
+    "function __codexDesktopLinuxExtractProposedPlan(e){if(typeof e!==`string`)return null;let t=e.match(/<proposed_plan\\b[^>]*>([\\s\\S]*?)<\\/proposed_plan>/i);if(t==null)return null;let n=t[1].trim();return n.length>0?n:null}function GB(e){for(let t=e.items.length-1;t>=0;--t){let n=e.items[t];if(n!=null&&n.type===`planImplementation`)return n.isCompleted?null:{type:`implementPlan`,id:dB(n.turnId),turnId:n.turnId,planContent:n.planContent}}for(let t=e.items.length-1;t>=0;--t){let n=e.items[t],r=n?.type===`agentMessage`?__codexDesktopLinuxExtractProposedPlan(n.text):null;if(r!=null&&e.turnId!=null)return{type:`implementPlan`,id:dB(e.turnId),turnId:e.turnId,planContent:r}}return null}";
+  const displayNeedle =
+    "case`agentMessage`:{l[t];let r=e.status===`inProgress`&&p>=0&&t===p,i=A3(n.text,r);if(i.removed&&i.content.length===0)break;let s=r&&QNe(i.content),u=r?null:oA({content:i.content,isHeartbeatAutomationTurn:d}),f=VPe({parsedHeartbeat:u?.parsedHeartbeat??null}),m=u?.displayContent??i.content;oPe(o,u?.artifactScanContent??i.content);let h=t===p?c:null;a.push({type:`assistant-message`,content:m,sentAtMs:h,completed:!r,phase:n.phase,responseAnnotationTargetId:n.id,renderPlaceholderWhileStreaming:s,structuredOutput:f,memoryCitation:n.memoryCitation??void 0});break}";
+  const displayReplacement =
+    "case`agentMessage`:{l[t];let r=e.status===`inProgress`&&p>=0&&t===p,i=A3(n.text,r);if(i.removed&&i.content.length===0)break;let s=r&&QNe(i.content),u=r?null:oA({content:i.content,isHeartbeatAutomationTurn:d}),f=VPe({parsedHeartbeat:u?.parsedHeartbeat??null}),m=u?.displayContent??i.content;oPe(o,u?.artifactScanContent??i.content);let h=t===p?c:null,__codexDesktopLinuxPlan=__codexDesktopLinuxExtractProposedPlan(m)??__codexDesktopLinuxExtractProposedPlan(i.content);if(__codexDesktopLinuxPlan!=null){a.push({type:`proposed-plan`,content:__codexDesktopLinuxPlan,completed:!r});break}a.push({type:`assistant-message`,content:m,sentAtMs:h,completed:!r,phase:n.phase,responseAnnotationTargetId:n.id,renderPlaceholderWhileStreaming:s,structuredOutput:f,memoryCitation:n.memoryCitation??void 0});break}";
+
+  console.log("  [patch] Convert raw proposed_plan messages into Plan UI");
+  let next = replaceOnce(
+    code,
+    pendingRequestNeedle,
+    pendingRequestReplacement,
+    "Plan mode proposed_plan pending request fallback"
+  );
+  next = replaceOnce(next, displayNeedle, displayReplacement, "Plan mode proposed_plan display fallback");
+  return next;
+}
+
+function patchPlanModeCollaborationModesFallback(code) {
+  if (code.includes("__codexDesktopLinuxPlanModeFallback")) {
+    console.log("  [ok] Plan mode collaboration modes fallback already patched");
+    return code;
+  }
+
+  const needle = "y=(f??[]).flatMap(e),b=i??_??y.find(e=>e.mode===v)??h,";
+  const replacement =
+    "y=(f??[]).flatMap(e),globalThis.__codexDesktopLinuxPlanModeFallback!==!1&&!y.some(e=>e.mode===`plan`)&&y.unshift({...h,mode:`plan`,settings:{...h.settings,developer_instructions:null}}),globalThis.__codexDesktopLinuxPlanModeFallback!==!1&&!y.some(e=>e.mode===`default`)&&y.push({...h,mode:`default`,settings:{...h.settings,developer_instructions:null}}),b=i??_??y.find(e=>e.mode===v)??h,";
+
+  console.log("  [patch] Add Linux Plan/default collaboration modes fallback");
+  return replaceOnce(code, needle, replacement, "Plan mode collaboration modes fallback");
+}
+
+function patchPlanModeShiftTabRendererFallback(code) {
+  if (code.includes("__codexDesktopLinuxPlanModeShiftTab")) {
+    console.log("  [ok] Plan mode Shift+Tab renderer fallback already patched");
+    return code;
+  }
+
+  const needle = "wU(`composer.togglePlanMode`,ye,xe);let{serviceTierSettings:Se}=Ox(re),Ce;";
+  const replacement =
+    "wU(`composer.togglePlanMode`,ye,xe),(0,Z9.useEffect)(()=>{if(!be||globalThis.__codexDesktopLinuxPlanModeShiftTab===!1)return;let e=e=>{if(e.defaultPrevented||e.key!==`Tab`||!e.shiftKey||e.metaKey||e.ctrlKey||e.altKey)return;e.preventDefault(),e.stopPropagation(),ye()};return window.addEventListener(`keydown`,e,{capture:!0}),()=>window.removeEventListener(`keydown`,e,{capture:!0})},[be,ye]);let{serviceTierSettings:Se}=Ox(re),Ce;";
+
+  console.log("  [patch] Add renderer fallback for Plan mode Shift+Tab");
+  return replaceOnce(code, needle, replacement, "Plan mode Shift+Tab renderer fallback");
+}
+
 function main() {
   const bundle = findMainBundle();
   console.log(`-- patch-linux-runtime: ${path.relative(PROJECT_ROOT, bundle)}`);
@@ -833,6 +942,31 @@ function main() {
     } else {
       console.log("  [ok] No Plan mode shortcut changes needed");
     }
+  }
+
+  const proposedPlanBundle = findPlanModeProposedPlanBundle();
+  console.log(`-- patch-linux-runtime: ${path.relative(PROJECT_ROOT, proposedPlanBundle)}`);
+  const originalProposedPlanBundle = fs.readFileSync(proposedPlanBundle, "utf8");
+  const proposedPlanBundleCode = patchPlanModeProposedPlanFallback(originalProposedPlanBundle);
+
+  if (proposedPlanBundleCode !== originalProposedPlanBundle) {
+    fs.writeFileSync(proposedPlanBundle, proposedPlanBundleCode, "utf8");
+    console.log("  [ok] Plan mode proposed_plan fallback patch applied");
+  } else {
+    console.log("  [ok] No Plan mode proposed_plan fallback changes needed");
+  }
+
+  const collaborationModesBundle = findPlanModeCollaborationModesBundle();
+  console.log(`-- patch-linux-runtime: ${path.relative(PROJECT_ROOT, collaborationModesBundle)}`);
+  const originalCollaborationModesBundle = fs.readFileSync(collaborationModesBundle, "utf8");
+  let collaborationModesBundleCode = patchPlanModeCollaborationModesFallback(originalCollaborationModesBundle);
+  collaborationModesBundleCode = patchPlanModeShiftTabRendererFallback(collaborationModesBundleCode);
+
+  if (collaborationModesBundleCode !== originalCollaborationModesBundle) {
+    fs.writeFileSync(collaborationModesBundle, collaborationModesBundleCode, "utf8");
+    console.log("  [ok] Plan mode collaboration/shortcut fallback patches applied");
+  } else {
+    console.log("  [ok] No Plan mode collaboration/shortcut fallback changes needed");
   }
 }
 

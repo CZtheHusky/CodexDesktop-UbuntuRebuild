@@ -6,7 +6,9 @@ const test = require("node:test");
 const {
   appPathForPlatform,
   createLogMonitor,
+  detectActivePlanMode,
   detectPlanMode,
+  extractProposedPlan,
   redactLog,
   shouldCopyProfilePath,
 } = require("./smoke-linux-desktop");
@@ -59,6 +61,31 @@ test("Plan mode detection works for English and Chinese controls", () => {
   );
 });
 
+test("Plan mode active detection uses explicit control state", () => {
+  assert.equal(
+    detectActivePlanMode({
+      bodyText: "",
+      controls: [{ aria: "Plan", ariaPressed: "true", text: "", title: "" }],
+    }),
+    true,
+  );
+  assert.equal(
+    detectActivePlanMode({
+      bodyText: "",
+      controls: [{ aria: "计划", ariaPressed: "false", text: "", title: "" }],
+    }),
+    false,
+  );
+});
+
+test("proposed_plan extraction ignores surrounding assistant text", () => {
+  assert.equal(
+    extractProposedPlan("before <proposed_plan>\n- step one\n</proposed_plan> after"),
+    "- step one",
+  );
+  assert.equal(extractProposedPlan("plain plan text"), null);
+});
+
 test("acceptance helpers resolve platform-specific paths", () => {
   assert.equal(archDirFor("linux-x64"), "x64");
   assert.equal(archDirFor("linux-arm64"), "arm64");
@@ -76,10 +103,12 @@ test("package scripts expose the reusable acceptance flow", () => {
     "verify:build-history",
     "smoke:linux:safe",
     "smoke:linux:auth-clone",
+    "smoke:linux:plan-flow",
     "smoke:linux:real",
   ]) {
     assert.equal(typeof pkg.scripts[script], "string", `${script} script missing`);
   }
   assert.match(pkg.scripts["build:accepted"], /smoke:linux:auth-clone/);
+  assert.match(pkg.scripts["build:accepted"], /smoke:linux:plan-flow/);
   assert.match(pkg.scripts["build:accepted"], /verify:build-history/);
 });

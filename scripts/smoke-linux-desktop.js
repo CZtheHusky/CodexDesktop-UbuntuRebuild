@@ -14,7 +14,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 
 const PROJECT_ROOT = path.join(__dirname, "..");
-const VALID_MODES = new Set(["safe", "auth-clone", "real"]);
+const VALID_MODES = new Set(["safe", "auth-clone", "plan-flow", "real"]);
 const VALID_PLATFORMS = new Set(["linux-x64", "linux-arm64"]);
 const DEFAULT_TIMEOUT_MS = 90_000;
 const LOG_LIMIT = 256 * 1024;
@@ -159,7 +159,7 @@ function createProfile(mode, options = {}) {
     XDG_CONFIG_HOME: path.join(profile.home, ".config"),
   };
 
-  if (mode === "auth-clone") {
+  if (mode === "auth-clone" || mode === "plan-flow") {
     const realHome = os.homedir();
     const copiedCodex = copyDirIfPresent(path.join(realHome, ".codex"), path.join(profile.home, ".codex"));
     const copiedUserData = copyDirIfPresent(
@@ -167,7 +167,7 @@ function createProfile(mode, options = {}) {
       path.join(profile.home, ".config", "Codex"),
     );
     if (!copiedCodex && !copiedUserData) {
-      fail("auth-clone smoke could not find ~/.codex or ~/.config/Codex to clone");
+      fail(`${mode} smoke could not find ~/.codex or ~/.config/Codex to clone`);
     }
   }
 
@@ -322,7 +322,14 @@ function snapshotExpression() {
   return `(() => {
     const controls = [...document.querySelectorAll("button,[role=button],textarea,input,[contenteditable=true]")].map((el, index) => ({
       aria: el.getAttribute("aria-label") || "",
+      ariaPressed: el.getAttribute("aria-pressed") || "",
+      ariaSelected: el.getAttribute("aria-selected") || "",
+      className: typeof el.className === "string" ? el.className.slice(0, 400) : "",
+      dataSelected: el.getAttribute("data-selected") || "",
+      dataState: el.getAttribute("data-state") || "",
+      disabled: el.disabled === true || el.getAttribute("aria-disabled") === "true",
       index,
+      placeholder: el.getAttribute("placeholder") || "",
       role: el.getAttribute("role") || "",
       tag: el.tagName,
       text: (el.innerText || el.value || "").trim().slice(0, 180),
@@ -339,18 +346,104 @@ function snapshotExpression() {
 }
 
 function controlHaystack(control) {
-  return `${control.aria}\n${control.title}\n${control.text}`;
+  return `${control.aria}\n${control.title}\n${control.text}\n${control.placeholder}`;
 }
 
 function hasControl(snapshot, pattern) {
   return snapshot.controls.some((control) => pattern.test(controlHaystack(control)));
 }
 
+function snapshotHaystack(snapshot) {
+  return `${snapshot.bodyText}\n${snapshot.controls.map(controlHaystack).join("\n")}`;
+}
+
+function formatSnapshotForFailure(snapshot) {
+  if (!snapshot) return "\n--- last UI snapshot ---\n<unavailable>";
+
+  const controls = snapshot.controls
+    .slice(0, 80)
+    .map((control) => {
+      const state = [
+        control.ariaPressed && `pressed=${control.ariaPressed}`,
+        control.ariaSelected && `selected=${control.ariaSelected}`,
+        control.dataSelected && `dataSelected=${control.dataSelected}`,
+        control.dataState && `dataState=${control.dataState}`,
+        control.disabled && "disabled=true",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const label = controlHaystack(control).replace(/\s+/g, " ").trim().slice(0, 220);
+      return `[${control.index}] ${control.tag}${control.role ? ` role=${control.role}` : ""}${
+        state ? ` ${state}` : ""
+      } ${label}`;
+    })
+    .join("\n");
+  const bodyTail = (snapshot.bodyText || "").slice(-6000);
+  return [
+    "\n--- last UI snapshot ---",
+    `title: ${snapshot.title || "<empty>"}`,
+    `buttons: ${snapshot.buttonCount}, editables: ${snapshot.editableCount}`,
+    "--- controls ---",
+    controls || "<none>",
+    "--- body tail ---",
+    bodyTail || "<empty>",
+  ].join("\n");
+}
+
+function isPlanControl(control) {
+  const value = controlHaystack(control).trim();
+  return /(^|\n)(Plan|计划|計劃)(\n|$)/i.test(value);
+}
+
 function detectPlanMode(snapshot) {
-  return snapshot.controls.some((control) => {
-    const value = controlHaystack(control).trim();
-    return /(^|\n)(Plan|计划|計劃)(\n|$)/i.test(value);
-  });
+  return snapshot.controls.some(isPlanControl);
+}
+
+function positiveControlState(control) {
+  const explicitState = [
+    control.ariaPressed,
+    control.ariaSelected,
+    control.dataSelected,
+    control.dataState,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  if (/\b(true|on|checked|selected|active)\b/i.test(explicitState)) return true;
+  if (/\b(false|off|unchecked)\b/i.test(explicitState)) return false;
+
+  const className = control.className || "";
+  if (/\b(active|selected|checked)\b/i.test(className)) return true;
+  return null;
+}
+
+function detectActivePlanMode(snapshot) {
+  const states = snapshot.controls.filter(isPlanControl).map(positiveControlState).filter((state) => state != null);
+  if (states.length > 0) return states.some(Boolean);
+  return /(?:Plan|计划|計劃)\s*(?:mode|模式)/i.test(snapshot.bodyText);
+}
+
+function extractProposedPlan(text) {
+  if (typeof text !== "string") return null;
+  const match = /<proposed_plan\b[^>]*>([\s\S]*?)<\/proposed_plan>/i.exec(text);
+  const plan = match?.[1]?.trim() ?? "";
+  return plan.length > 0 ? plan : null;
+}
+
+function hasRawProposedPlan(snapshot) {
+  return /<\/?proposed_plan\b/i.test(snapshot.bodyText);
+}
+
+function hasPlanSummaryUi(snapshot, marker) {
+  const text = snapshotHaystack(snapshot);
+  if (!text.includes(marker)) return false;
+  if (hasRawProposedPlan(snapshot)) return false;
+  return /Download plan|Open plan in side panel|Collapse plan summary|Expand plan summary|下载计划|在侧边面板中打开计划|折叠计划摘要|展开计划摘要|下載計劃|開啟.*計劃.*側邊|摺疊.*計劃|展開.*計劃|下载套餐|在侧边面板中打开套餐|下載套餐|開啟.*套餐.*側邊|Implement plan|执行计划|执行此计划|实施计划|实施此计划|執行計劃|執行此計劃|實施計劃|實施此計劃/i.test(text);
+}
+
+function hasImplementPlanRequest(snapshot) {
+  return /Implement plan|Implement this plan|Yes, implement this plan|执行计划|执行此计划|实施计划|实施此计划|執行計劃|執行此計劃|實施計劃|實施此計劃|實行計劃|實行此計劃/i.test(
+    snapshotHaystack(snapshot),
+  );
 }
 
 function assertCoreUi(snapshot, mode) {
@@ -404,6 +497,144 @@ async function clickFirst(cdp, patternSource, flags = "i") {
   })()`);
 }
 
+function composerEditorScript(body) {
+  return `(() => {
+    function editorText(el) {
+      return [el.getAttribute("aria-label"), el.getAttribute("title"), el.getAttribute("placeholder"), el.innerText, el.value]
+        .filter(Boolean)
+        .join("\\n");
+    }
+    function isUsableEditor(el) {
+      return !el.disabled && el.getAttribute("aria-disabled") !== "true";
+    }
+    function isVisibleEditor(el) {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+    }
+    function isTerminalEditor(el) {
+      return Boolean(el.closest("[data-codex-terminal], .xterm")) || /terminal input|terminal|终端|終端/i.test(editorText(el));
+    }
+    const editors = [...document.querySelectorAll("[contenteditable=true], textarea")]
+      .filter((el) => isUsableEditor(el) && isVisibleEditor(el) && !isTerminalEditor(el));
+    const composerEditors = editors.filter((el) =>
+      Boolean(el.closest("[data-codex-composer]")) || /chatgpt|message|消息|撰写|撰寫|输入|輸入/i.test(editorText(el))
+    );
+    const editor = composerEditors.at(-1) || editors.at(-1) || null;
+    ${body}
+  })()`;
+}
+
+async function focusComposer(cdp) {
+  return cdp.evaluate(composerEditorScript(`
+    if (!editor) return false;
+    editor.focus();
+    return document.activeElement === editor || editor.contains(document.activeElement);
+  `));
+}
+
+async function getComposerText(cdp) {
+  return cdp.evaluate(composerEditorScript(`
+    return editor ? (editor.innerText || editor.value || "") : "";
+  `));
+}
+
+async function clearComposer(cdp) {
+  if (!(await focusComposer(cdp))) fail("composer/editor could not be focused");
+  await dispatchKey(cdp, "a", "KeyA", 65, 2);
+  await dispatchKey(cdp, "Backspace", "Backspace", 8);
+  await sleep(250);
+}
+
+async function insertComposerText(cdp, text, expectedSubstring = text) {
+  await clearComposer(cdp);
+  await cdp.send("Input.insertText", { text });
+  await sleep(300);
+  let inserted = await getComposerText(cdp);
+  if (inserted.includes(expectedSubstring)) return;
+
+  await cdp.evaluate(composerEditorScript(`
+    if (!editor) return false;
+    editor.focus();
+    document.execCommand("insertText", false, ${JSON.stringify(text)});
+    return true;
+  `));
+  await sleep(300);
+  inserted = await getComposerText(cdp);
+  if (!inserted.includes(expectedSubstring)) {
+    const snapshot = await cdp.evaluate(snapshotExpression());
+    fail(`composer/editor did not accept prompt input${formatSnapshotForFailure(snapshot)}`);
+  }
+}
+
+async function submitComposer(cdp, marker) {
+  if (!(await focusComposer(cdp))) fail("composer/editor could not be focused before submit");
+  await dispatchKey(cdp, "Enter", "Enter", 13);
+  await sleep(1_000);
+  const text = await getComposerText(cdp);
+  if (!text.includes(marker)) return;
+
+  const clicked = await clickFirst(cdp, "send|submit|发送|提交|傳送|送出|arrow");
+  if (!clicked) fail("composer prompt did not submit with Enter and send button was not found");
+}
+
+async function waitForSnapshot(cdp, deadline, label, predicate) {
+  let snapshot = null;
+  while (Date.now() <= deadline) {
+    snapshot = await cdp.evaluate(snapshotExpression());
+    if (predicate(snapshot)) return snapshot;
+    await sleep(500);
+  }
+  fail(`${label} did not appear${formatSnapshotForFailure(snapshot)}`);
+}
+
+async function markerContexts(cdp, marker) {
+  return cdp.evaluate(`(() => {
+    const marker = ${JSON.stringify(marker)};
+    const hits = [];
+    const elements = [...document.body.querySelectorAll("*")].filter((el) => {
+      const text = el.innerText || "";
+      if (!text.includes(marker)) return false;
+      return ![...el.children].some((child) => (child.innerText || "").includes(marker));
+    });
+    for (const element of elements.slice(0, 20)) {
+      const chain = [];
+      let current = element;
+      for (let depth = 0; current && depth < 12; depth += 1, current = current.parentElement) {
+        chain.push({
+          aria: current.getAttribute("aria-label") || "",
+          className: typeof current.className === "string" ? current.className.slice(0, 400) : "",
+          role: current.getAttribute("role") || "",
+          tag: current.tagName,
+          text: (current.innerText || "").slice(0, 2000),
+          title: current.getAttribute("title") || ""
+        });
+      }
+      hits.push(chain);
+    }
+    return hits;
+  })()`);
+}
+
+function markerContextLooksLikePlanUi(contexts, marker = null) {
+  return contexts.some((chain) =>
+    chain.some((entry) => {
+      const text = `${entry.aria}\n${entry.title}\n${entry.text}\n${entry.className}`;
+      if (
+        marker != null &&
+        entry.text.includes(marker) &&
+        !/请只拟定|計劃內容必須包含標識|计划内容必须包含标识|不要执行|不要執行|不要修改/.test(entry.text) &&
+        /目标|目標|标识|標識|实施|實施|执行|執行|验证|驗證|step/i.test(entry.text)
+      ) {
+        return true;
+      }
+      return /Download plan|Open plan in side panel|Collapse plan summary|Expand plan summary|下载计划|在侧边面板中打开计划|折叠计划摘要|展开计划摘要|下載計劃|開啟.*計劃.*側邊|摺疊.*計劃|展開.*計劃|下载套餐|在侧边面板中打开套餐|下載套餐|開啟.*套餐.*側邊|执行此计划|实施此计划|執行此計劃|實施此計劃|proposed-plan|plan-summary/i.test(
+        text,
+      );
+    }),
+  );
+}
+
 async function exerciseMenu(cdp, patternSource, label) {
   const clicked = await clickFirst(cdp, patternSource);
   if (!clicked) fail(`${label} control was not found`);
@@ -447,24 +678,93 @@ async function exercisePlanShortcut(cdp) {
     return true;
   })()`);
   const before = await cdp.evaluate(snapshotExpression());
-  const initial = detectPlanMode(before);
+  if (!detectPlanMode(before)) {
+    console.log("  [skip] Plan mode control is not rendered in this UI state; plan-flow smoke validates it");
+    await dispatchKey(cdp, "Tab", "Tab", 9, 8);
+    await sleep(250);
+    await dispatchKey(cdp, "Tab", "Tab", 9, 8);
+    return;
+  }
+  const initial = detectActivePlanMode(before);
   await dispatchKey(cdp, "Tab", "Tab", 9, 8);
 
   let after = before;
   for (let i = 0; i < 12; i += 1) {
     await sleep(250);
     after = await cdp.evaluate(snapshotExpression());
-    if (detectPlanMode(after) !== initial) break;
+    if (detectActivePlanMode(after) !== initial) break;
   }
-  if (detectPlanMode(after) === initial) fail("Shift+Tab did not toggle Plan mode");
+  if (detectActivePlanMode(after) === initial) fail("Shift+Tab did not toggle Plan mode active state");
 
   await dispatchKey(cdp, "Tab", "Tab", 9, 8);
   for (let i = 0; i < 12; i += 1) {
     await sleep(250);
     after = await cdp.evaluate(snapshotExpression());
-    if (detectPlanMode(after) === initial) return;
+    if (detectActivePlanMode(after) === initial) return;
   }
   fail("Shift+Tab did not restore the original Plan mode state");
+}
+
+async function openNewThread(cdp) {
+  await dispatchKey(cdp, "n", "KeyN", 78, 2);
+  await sleep(1_000);
+}
+
+async function togglePlanModeShortcut(cdp) {
+  const focused = await focusComposer(cdp);
+  if (!focused) {
+    await cdp.evaluate(`(() => {
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      document.body.focus();
+      return true;
+    })()`);
+  }
+  await dispatchKey(cdp, "Tab", "Tab", 9, 8);
+  await sleep(500);
+}
+
+async function exercisePlanFlow(cdp, deadline) {
+  await openNewThread(cdp);
+  await togglePlanModeShortcut(cdp);
+
+  const marker = `codex-plan-smoke-${Date.now()}`;
+  const prompt = [
+    "请只拟定一个两步计划，不要执行，不要修改文件。",
+    `计划内容必须包含标识 ${marker}。`,
+    "计划必须很短。",
+  ].join("\n");
+  await insertComposerText(cdp, prompt, marker);
+  await submitComposer(cdp, marker);
+
+  const planSnapshot = await waitForSnapshot(
+    cdp,
+    Math.min(deadline, deadlineFromNow(180_000)),
+    "Plan summary and implementation request UI",
+    (snapshot) => hasPlanSummaryUi(snapshot, marker) && hasImplementPlanRequest(snapshot),
+  );
+  if (hasRawProposedPlan(planSnapshot)) fail("raw <proposed_plan> tags are visible in the UI");
+
+  const planContexts = await markerContexts(cdp, marker);
+  if (!markerContextLooksLikePlanUi(planContexts, marker)) {
+    fail(`Plan marker was visible, but not inside the dedicated Plan summary UI${formatSnapshotForFailure(planSnapshot)}`);
+  }
+
+  await togglePlanModeShortcut(cdp);
+
+  const chatMarker = `codex-chat-smoke-${Date.now()}`;
+  await insertComposerText(cdp, `请只回复 ${chatMarker}，不要拟定计划，不要执行任何操作。`, chatMarker);
+  await submitComposer(cdp, chatMarker);
+  const chatSnapshot = await waitForSnapshot(
+    cdp,
+    Math.min(deadline, deadlineFromNow(180_000)),
+    "default-mode follow-up response after exiting Plan mode",
+    (snapshot) => snapshotHaystack(snapshot).includes(chatMarker),
+  );
+  if (hasRawProposedPlan(chatSnapshot)) fail("raw <proposed_plan> tags appeared after exiting Plan mode");
+  const chatContexts = await markerContexts(cdp, chatMarker);
+  if (markerContextLooksLikePlanUi(chatContexts, chatMarker)) {
+    fail("Shift+Tab did not exit Plan mode; follow-up response rendered as a Plan summary");
+  }
 }
 
 async function exerciseCoreUi(cdp, mode) {
@@ -487,8 +787,7 @@ async function exerciseCoreUi(cdp, mode) {
   await exerciseMenu(cdp, "approval|approve|审批|審批|替我审批", "approval menu");
 
   if (mode !== "real") {
-    await dispatchKey(cdp, "n", "KeyN", 78, 2);
-    await sleep(500);
+    await openNewThread(cdp);
     await dispatchKey(cdp, "n", "KeyN", 78, 3);
     await sleep(500);
   }
@@ -535,6 +834,9 @@ async function runSmoke(options) {
     logs.assertNoFatal();
 
     await exerciseCoreUi(cdp, mode);
+    if (mode === "plan-flow") {
+      await exercisePlanFlow(cdp, deadline);
+    }
     logs.assertNoFatal();
 
     console.log(`  [ok] ${mode} smoke passed`);
@@ -572,7 +874,10 @@ module.exports = {
   controlHaystack,
   createLogMonitor,
   createProfile,
+  detectActivePlanMode,
   detectPlanMode,
+  extractProposedPlan,
+  formatSnapshotForFailure,
   redactLog,
   runSmoke,
   shouldCopyProfilePath,
