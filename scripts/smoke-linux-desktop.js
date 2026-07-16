@@ -549,6 +549,7 @@ function positiveControlState(control) {
 function detectActivePlanMode(snapshot) {
   const states = snapshot.controls.filter(isPlanControl).map(positiveControlState).filter((state) => state != null);
   if (states.length > 0) return states.some(Boolean);
+  if (snapshot.controls.some(isPlanControl)) return true;
   return /(?:Plan|计划|計劃)\s*(?:mode|模式)/i.test(snapshot.bodyText);
 }
 
