@@ -414,13 +414,16 @@ function snapshotExpression() {
       dataState: el.getAttribute("data-state") || "",
       dataTestId: el.getAttribute("data-testid") || "",
       disabled: el.disabled === true || el.getAttribute("aria-disabled") === "true",
+      inComposer: Boolean(el.closest("[data-codex-composer]")),
       index,
       placeholder: el.getAttribute("placeholder") || "",
+      rectBottom: el.getBoundingClientRect().bottom,
       role: el.getAttribute("role") || "",
       tag: el.tagName,
       text: (el.innerText || el.value || "").trim().slice(0, 180),
       title: el.getAttribute("title") || "",
-      type: el.getAttribute("type") || ""
+      type: el.getAttribute("type") || "",
+      viewportHeight: window.innerHeight
     }));
     return {
       bodyText: (document.body && document.body.innerText || "").slice(0, 20000),
@@ -549,7 +552,12 @@ function positiveControlState(control) {
 function detectActivePlanMode(snapshot) {
   const states = snapshot.controls.filter(isPlanControl).map(positiveControlState).filter((state) => state != null);
   if (states.length > 0) return states.some(Boolean);
-  if (snapshot.controls.some(isPlanControl)) return true;
+  if (snapshot.controls.some((control) =>
+    isPlanControl(control) && (
+      control.inComposer === true ||
+      Number(control.rectBottom) >= Number(control.viewportHeight) * 0.65
+    )
+  )) return true;
   return /(?:Plan|计划|計劃)\s*(?:mode|模式)/i.test(snapshot.bodyText);
 }
 

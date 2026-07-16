@@ -219,9 +219,16 @@ test("Plan mode active detection uses explicit control state", () => {
   assert.equal(
     detectActivePlanMode({
       bodyText: "",
-      controls: [{ aria: "Plan", ariaPressed: "", text: "", title: "" }],
+      controls: [{ aria: "Plan", ariaPressed: "", rectBottom: 900, text: "", title: "", viewportHeight: 1000 }],
     }),
     true,
+  );
+  assert.equal(
+    detectActivePlanMode({
+      bodyText: "",
+      controls: [{ aria: "Plan", ariaPressed: "", rectBottom: 300, text: "", title: "", viewportHeight: 1000 }],
+    }),
+    false,
   );
 });
 
