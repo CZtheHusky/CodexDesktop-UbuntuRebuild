@@ -782,10 +782,31 @@ function patchPlanModeShortcut(code) {
 
 function patchPlanModeProposedPlanFallback(code) {
   const helperName = "__codexDesktopLinuxExtractProposedPlan";
-  if (code.includes(helperName)) {
+  const completedPlanHelperName = "__codexDesktopLinuxCompletedPlan";
+  const extractionHelper =
+    "function __codexDesktopLinuxExtractProposedPlan(e){if(typeof e!==`string`)return null;let t=e.match(/<proposed_plan\\b[^>]*>([\\s\\S]*?)<\\/proposed_plan>/i);if(t==null)return null;let n=t[1].trim();return n.length>0?n:null}";
+  const completedPlanHelper =
+    "function __codexDesktopLinuxCompletedPlan(e){for(let t=e.length-1;t>=0;--t){let n=e[t];if(n!=null&&n.type===`plan`)return typeof n.text===`string`?n.text.trim():``}for(let t=e.length-1;t>=0;--t){let n=e[t],r=n?.type===`agentMessage`?__codexDesktopLinuxExtractProposedPlan(n.text):null;if(r!=null)return r}return``}";
+  const nativePendingRequest =
+    "function GB(e){for(let t=e.items.length-1;t>=0;--t){let n=e.items[t];if(n!=null&&n.type===`planImplementation`)return n.isCompleted?null:{type:`implementPlan`,id:dB(n.turnId),turnId:n.turnId,planContent:n.planContent}}return null}";
+  const legacyPendingRequest =
+    "function GB(e){for(let t=e.items.length-1;t>=0;--t){let n=e.items[t];if(n!=null&&n.type===`planImplementation`)return n.isCompleted?null:{type:`implementPlan`,id:dB(n.turnId),turnId:n.turnId,planContent:n.planContent}}for(let t=e.items.length-1;t>=0;--t){let n=e.items[t],r=n?.type===`agentMessage`?__codexDesktopLinuxExtractProposedPlan(n.text):null;if(r!=null&&e.turnId!=null)return{type:`implementPlan`,id:dB(e.turnId),turnId:e.turnId,planContent:r}}return null}";
+  const displayNeedle =
+    "case`agentMessage`:{l[t];let r=e.status===`inProgress`&&p>=0&&t===p,i=A3(n.text,r);if(i.removed&&i.content.length===0)break;let s=r&&QNe(i.content),u=r?null:oA({content:i.content,isHeartbeatAutomationTurn:d}),f=VPe({parsedHeartbeat:u?.parsedHeartbeat??null}),m=u?.displayContent??i.content;oPe(o,u?.artifactScanContent??i.content);let h=t===p?c:null;a.push({type:`assistant-message`,content:m,sentAtMs:h,completed:!r,phase:n.phase,responseAnnotationTargetId:n.id,renderPlaceholderWhileStreaming:s,structuredOutput:f,memoryCitation:n.memoryCitation??void 0});break}";
+  const displayReplacement =
+    "case`agentMessage`:{l[t];let r=e.status===`inProgress`&&p>=0&&t===p,i=A3(n.text,r);if(i.removed&&i.content.length===0)break;let s=r&&QNe(i.content),u=r?null:oA({content:i.content,isHeartbeatAutomationTurn:d}),f=VPe({parsedHeartbeat:u?.parsedHeartbeat??null}),m=u?.displayContent??i.content;oPe(o,u?.artifactScanContent??i.content);let h=t===p?c:null,__codexDesktopLinuxPlan=__codexDesktopLinuxExtractProposedPlan(m)??__codexDesktopLinuxExtractProposedPlan(i.content);if(__codexDesktopLinuxPlan!=null){a.push({type:`proposed-plan`,content:__codexDesktopLinuxPlan,completed:!r});break}a.push({type:`assistant-message`,content:m,sentAtMs:h,completed:!r,phase:n.phase,responseAnnotationTargetId:n.id,renderPlaceholderWhileStreaming:s,structuredOutput:f,memoryCitation:n.memoryCitation??void 0});break}";
+  const completedPlanNeedle =
+    "let r=(0,e4.default)(e.items,e=>e.type===`plan`);if(!r)return;let s=r.text.trim();s.length!==0&&(i=s)";
+  const completedPlanReplacement =
+    "let r=__codexDesktopLinuxCompletedPlan(e.items);r.length!==0&&(i=r)";
+
+  if (code.includes(completedPlanHelperName)) {
     if (
+      code.includes(helperName) &&
       code.includes("__codexDesktopLinuxPlan") &&
-      code.includes("type:`implementPlan`,id:dB(e.turnId),turnId:e.turnId,planContent:r")
+      code.includes(completedPlanReplacement) &&
+      code.includes(nativePendingRequest) &&
+      !code.includes(legacyPendingRequest)
     ) {
       console.log("  [ok] Plan mode proposed_plan fallback already patched");
       return code;
@@ -793,23 +814,23 @@ function patchPlanModeProposedPlanFallback(code) {
     fail("Plan mode proposed_plan fallback is only partially patched");
   }
 
-  const pendingRequestNeedle =
-    "function GB(e){for(let t=e.items.length-1;t>=0;--t){let n=e.items[t];if(n!=null&&n.type===`planImplementation`)return n.isCompleted?null:{type:`implementPlan`,id:dB(n.turnId),turnId:n.turnId,planContent:n.planContent}}return null}";
-  const pendingRequestReplacement =
-    "function __codexDesktopLinuxExtractProposedPlan(e){if(typeof e!==`string`)return null;let t=e.match(/<proposed_plan\\b[^>]*>([\\s\\S]*?)<\\/proposed_plan>/i);if(t==null)return null;let n=t[1].trim();return n.length>0?n:null}function GB(e){for(let t=e.items.length-1;t>=0;--t){let n=e.items[t];if(n!=null&&n.type===`planImplementation`)return n.isCompleted?null:{type:`implementPlan`,id:dB(n.turnId),turnId:n.turnId,planContent:n.planContent}}for(let t=e.items.length-1;t>=0;--t){let n=e.items[t],r=n?.type===`agentMessage`?__codexDesktopLinuxExtractProposedPlan(n.text):null;if(r!=null&&e.turnId!=null)return{type:`implementPlan`,id:dB(e.turnId),turnId:e.turnId,planContent:r}}return null}";
-  const displayNeedle =
-    "case`agentMessage`:{l[t];let r=e.status===`inProgress`&&p>=0&&t===p,i=A3(n.text,r);if(i.removed&&i.content.length===0)break;let s=r&&QNe(i.content),u=r?null:oA({content:i.content,isHeartbeatAutomationTurn:d}),f=VPe({parsedHeartbeat:u?.parsedHeartbeat??null}),m=u?.displayContent??i.content;oPe(o,u?.artifactScanContent??i.content);let h=t===p?c:null;a.push({type:`assistant-message`,content:m,sentAtMs:h,completed:!r,phase:n.phase,responseAnnotationTargetId:n.id,renderPlaceholderWhileStreaming:s,structuredOutput:f,memoryCitation:n.memoryCitation??void 0});break}";
-  const displayReplacement =
-    "case`agentMessage`:{l[t];let r=e.status===`inProgress`&&p>=0&&t===p,i=A3(n.text,r);if(i.removed&&i.content.length===0)break;let s=r&&QNe(i.content),u=r?null:oA({content:i.content,isHeartbeatAutomationTurn:d}),f=VPe({parsedHeartbeat:u?.parsedHeartbeat??null}),m=u?.displayContent??i.content;oPe(o,u?.artifactScanContent??i.content);let h=t===p?c:null,__codexDesktopLinuxPlan=__codexDesktopLinuxExtractProposedPlan(m)??__codexDesktopLinuxExtractProposedPlan(i.content);if(__codexDesktopLinuxPlan!=null){a.push({type:`proposed-plan`,content:__codexDesktopLinuxPlan,completed:!r});break}a.push({type:`assistant-message`,content:m,sentAtMs:h,completed:!r,phase:n.phase,responseAnnotationTargetId:n.id,renderPlaceholderWhileStreaming:s,structuredOutput:f,memoryCitation:n.memoryCitation??void 0});break}";
-
   console.log("  [patch] Convert raw proposed_plan messages into Plan UI");
-  let next = replaceOnce(
-    code,
-    pendingRequestNeedle,
-    pendingRequestReplacement,
-    "Plan mode proposed_plan pending request fallback"
-  );
-  next = replaceOnce(next, displayNeedle, displayReplacement, "Plan mode proposed_plan display fallback");
+  let next = code;
+  if (next.includes(helperName)) {
+    next = replaceOnce(next, extractionHelper, `${extractionHelper}${completedPlanHelper}`, "Plan mode completion helper");
+    next = replaceOnce(next, legacyPendingRequest, nativePendingRequest, "Plan mode legacy pending request removal");
+  } else {
+    next = replaceOnce(
+      next,
+      nativePendingRequest,
+      `${extractionHelper}${completedPlanHelper}${nativePendingRequest}`,
+      "Plan mode completion helpers"
+    );
+  }
+  if (!next.includes("__codexDesktopLinuxPlan")) {
+    next = replaceOnce(next, displayNeedle, displayReplacement, "Plan mode proposed_plan display fallback");
+  }
+  next = replaceOnce(next, completedPlanNeedle, completedPlanReplacement, "Plan mode completion state fallback");
   return next;
 }
 

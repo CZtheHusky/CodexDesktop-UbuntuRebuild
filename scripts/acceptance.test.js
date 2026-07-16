@@ -11,6 +11,7 @@ const {
   detectActivePlanMode,
   detectPlanMode,
   extractProposedPlan,
+  hasImplementPlanRequest,
   isApprovalAllowControl,
   isApprovalDenyControl,
   isDefaultApprovalControl,
@@ -225,13 +226,37 @@ test("proposed_plan extraction ignores surrounding assistant text", () => {
   assert.equal(extractProposedPlan("plain plan text"), null);
 });
 
+test("Plan implementation prompt detection does not confuse the action label with an open request", () => {
+  const snapshot = (bodyText) => ({ bodyText, controls: [] });
+  assert.equal(hasImplementPlanRequest(snapshot("Implement this plan?")), true);
+  assert.equal(hasImplementPlanRequest(snapshot("实施此计划？")), true);
+  assert.equal(hasImplementPlanRequest(snapshot("Yes, implement this plan")), false);
+  assert.equal(hasImplementPlanRequest(snapshot("是，实施此计划")), false);
+});
+
 test("Plan implementation accepts a real manual approval before asserting output", () => {
   const smoke = fs.readFileSync(path.join(__dirname, "smoke-linux-desktop.js"), "utf8");
+  assert.match(smoke, /pointerClickPlanRequest/);
+  assert.match(smoke, /dismissed Plan request after additional input/);
+  assert.match(smoke, /closed Plan implementation request/);
+  assert.match(smoke, /skipped Plan implementation request/);
+  assert.match(smoke, /dismissed Plan request after implementation selection/);
   assert.match(smoke, /Plan implementation approval could not be accepted/);
   assert.match(smoke, /implementationSnapshot\.controls\.some\(isApprovalAllowControl\)/);
-  assert.match(smoke, /Plan implementation output was incorrect/);
+  assert.match(smoke, /Plan implementation output was incorrect or was written more than once/);
   assert.match(smoke, /await waitForTurnCompletion\(/);
   assert.match(smoke, /Plan implementation turn/);
+  assert.match(smoke, /Plan implementation request returned after app restart/);
+});
+
+test("Plan fallback creates real completion state and rejects the legacy UI-only request", () => {
+  const patch = fs.readFileSync(path.join(__dirname, "patch-linux-runtime.js"), "utf8");
+  const verify = fs.readFileSync(path.join(__dirname, "verify-linux-desktop.js"), "utf8");
+  assert.match(patch, /__codexDesktopLinuxCompletedPlan/);
+  assert.match(patch, /Plan mode legacy pending request removal/);
+  assert.match(patch, /Plan mode completion state fallback/);
+  assert.match(verify, /PLAN_MODE_LEGACY_SYNTHETIC_REQUEST/);
+  assert.match(verify, /UI-only synthetic Plan implementation request/);
 });
 
 test("restart persistence searches the saved task before asserting its unique marker", () => {

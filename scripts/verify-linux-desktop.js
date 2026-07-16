@@ -19,6 +19,10 @@ const PLAN_MODE_COMMAND_WITH_BROKEN_SHIFT_TAB =
   "{id:`composer.togglePlanMode`,titleIntlId:`codex.command.composer.togglePlanMode`,descriptionIntlId:`codex.commandDescription.composer.togglePlanMode`,shortcutScope:`app`,electron:{defaultKeybindings:[{key:`Shift+Tab`]}}}";
 const PLAN_MODE_COMMAND_WITH_SHIFT_TAB =
   "{id:`composer.togglePlanMode`,titleIntlId:`codex.command.composer.togglePlanMode`,descriptionIntlId:`codex.commandDescription.composer.togglePlanMode`,shortcutScope:`app`,electron:{defaultKeybindings:[{key:`Shift+Tab`}]}}";
+const PLAN_MODE_COMPLETION_FALLBACK =
+  "let r=__codexDesktopLinuxCompletedPlan(e.items);r.length!==0&&(i=r)";
+const PLAN_MODE_LEGACY_SYNTHETIC_REQUEST =
+  "if(r!=null&&e.turnId!=null)return{type:`implementPlan`,id:dB(e.turnId),turnId:e.turnId,planContent:r}";
 
 function argValue(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -500,12 +504,17 @@ function verifyPrepared() {
   const proposedPlanBundle = findPlanModeProposedPlanBundle();
   assert(
     proposedPlanBundle.code.includes("__codexDesktopLinuxExtractProposedPlan") &&
+      proposedPlanBundle.code.includes("__codexDesktopLinuxCompletedPlan") &&
       proposedPlanBundle.code.includes("__codexDesktopLinuxPlan") &&
-      proposedPlanBundle.code.includes("type:`implementPlan`,id:dB(e.turnId),turnId:e.turnId,planContent:r") &&
+      proposedPlanBundle.code.includes(PLAN_MODE_COMPLETION_FALLBACK) &&
       proposedPlanBundle.code.includes("type:`proposed-plan`,content:__codexDesktopLinuxPlan"),
-    "Plan mode raw proposed_plan renderer fallback is missing"
+    "Plan mode raw proposed_plan state/renderer fallback is missing"
   );
-  ok(`Plan mode raw proposed_plan fallback is present in ${rel(proposedPlanBundle.file)}`);
+  assert(
+    !proposedPlanBundle.code.includes(PLAN_MODE_LEGACY_SYNTHETIC_REQUEST),
+    "Plan mode still contains the UI-only synthetic implementation request"
+  );
+  ok(`Plan mode raw proposed_plan state/renderer fallback is present in ${rel(proposedPlanBundle.file)}`);
   const collaborationModesBundle = findPlanModeCollaborationModesBundle();
   assert(
     collaborationModesBundle.code.includes("__codexDesktopLinuxPlanModeFallback") &&
@@ -716,10 +725,15 @@ function verifyPackage(platform) {
     );
     assert(
       appAsarContent.includes(Buffer.from("__codexDesktopLinuxExtractProposedPlan")) &&
+        appAsarContent.includes(Buffer.from("__codexDesktopLinuxCompletedPlan")) &&
         appAsarContent.includes(Buffer.from("__codexDesktopLinuxPlan")) &&
-        appAsarContent.includes(Buffer.from("type:`implementPlan`,id:dB(e.turnId),turnId:e.turnId,planContent:r")) &&
+        appAsarContent.includes(Buffer.from(PLAN_MODE_COMPLETION_FALLBACK)) &&
         appAsarContent.includes(Buffer.from("type:`proposed-plan`,content:__codexDesktopLinuxPlan")),
-      "Packaged app.asar is missing Plan mode raw proposed_plan renderer fallback"
+      "Packaged app.asar is missing Plan mode raw proposed_plan state/renderer fallback"
+    );
+    assert(
+      !appAsarContent.includes(Buffer.from(PLAN_MODE_LEGACY_SYNTHETIC_REQUEST)),
+      "Packaged app.asar still contains the UI-only synthetic Plan implementation request"
     );
     assert(
       appAsarContent.includes(Buffer.from("__codexDesktopLinuxPlanModeFallback")) &&

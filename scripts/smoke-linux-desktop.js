@@ -571,7 +571,7 @@ function hasPlanSummaryUi(snapshot, marker) {
 }
 
 function hasImplementPlanRequest(snapshot) {
-  return /Implement plan|Implement this plan|Yes, implement this plan|执行计划|执行此计划|实施计划|实施此计划|執行計劃|執行此計劃|實施計劃|實施此計劃|實行計劃|實行此計劃/i.test(
+  return /Implement this plan\?|执行此计划[？?]|实施此计划[？?]|執行此計劃[？?]|實施此計劃[？?]|實行此計劃[？?]/i.test(
     snapshotHaystack(snapshot),
   );
 }
@@ -647,6 +647,54 @@ async function pointerClickFirst(cdp, patternSource, flags = "i") {
     if (!target) return null;
     const rect = target.getBoundingClientRect();
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  if (!point) return false;
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+  await cdp.send("Input.dispatchMouseEvent", {
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+    type: "mousePressed",
+    ...point,
+  });
+  await cdp.send("Input.dispatchMouseEvent", {
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+    type: "mouseReleased",
+    ...point,
+  });
+  return true;
+}
+
+async function pointerClickPlanRequest(cdp, patternSource, flags = "i") {
+  const point = await cdp.evaluate(`(() => {
+    const promptPattern = /Implement this plan\\?|执行此计划[？?]|实施此计划[？?]|執行此計劃[？?]|實施此計劃[？?]|實行此計劃[？?]/i;
+    const actionPattern = new RegExp(${JSON.stringify(patternSource)}, ${JSON.stringify(flags)});
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+    };
+    const prompt = [...document.querySelectorAll("*")].find((element) => {
+      if (!visible(element) || !promptPattern.test((element.innerText || "").trim())) return false;
+      return ![...element.children].some((child) => promptPattern.test((child.innerText || "").trim()));
+    });
+    for (let root = prompt, depth = 0; root && root !== document.body && depth < 10; root = root.parentElement, depth += 1) {
+      const controls = [...root.querySelectorAll("button,[role=button],[role=menuitem],[role=option]")];
+      const target = controls.find((element) => {
+        if (!visible(element) || element.disabled || element.getAttribute("aria-disabled") === "true") return false;
+        const text = [element.getAttribute("aria-label"), element.getAttribute("title"), element.innerText]
+          .filter(Boolean)
+          .join("\\n");
+        return actionPattern.test(text);
+      });
+      if (target) {
+        const rect = target.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      }
+    }
+    return null;
   })()`);
   if (!point) return false;
   await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
@@ -1440,38 +1488,77 @@ async function togglePlanModeShortcut(cdp) {
   await sleep(500);
 }
 
-async function exercisePlanFlow(cdp, deadline, workspace = null) {
-  await openNewThread(cdp);
+async function ensurePlanMode(cdp) {
+  const before = await cdp.evaluate(snapshotExpression());
+  if (detectActivePlanMode(before)) return;
   await togglePlanModeShortcut(cdp);
+  await waitForSnapshot(
+    cdp,
+    deadlineFromNow(10_000),
+    "active Plan mode",
+    (snapshot) => detectActivePlanMode(snapshot),
+  );
+}
 
-  const marker = `codex-plan-smoke-${Date.now()}`;
-  const implementationMarker = `codex-plan-implemented-${Date.now()}`;
-  const implementationFile = workspace ? path.join(workspace.root, "plan-result.txt") : null;
+async function createPlanRequest(cdp, deadline, workspace, scenario) {
+  await openNewThread(cdp);
+  await ensurePlanMode(cdp);
+
+  const marker = `codex-plan-${scenario}-${Date.now()}`;
+  const output = path.join(workspace.root, `plan-${scenario}.txt`);
   const prompt = [
     "请只拟定一个两步计划，不要执行，不要修改文件。",
     `计划内容必须包含标识 ${marker}。`,
-    implementationFile
-      ? `计划在用户选择执行后，必须在 ${implementationFile} 写入 ${implementationMarker}。`
-      : "计划必须包含一个可以执行的验证步骤。",
+    `计划在用户选择实施后，必须向 ${output} 追加一行实施标识。`,
     "计划必须很短。",
   ].join("\n");
   await insertComposerText(cdp, prompt, marker);
   await submitComposer(cdp, marker);
 
-  const planSnapshot = await waitForSnapshot(
+  const snapshot = await waitForSnapshot(
     cdp,
     Math.min(deadline, deadlineFromNow(180_000)),
     "Plan summary and implementation request UI",
     (snapshot) => hasPlanSummaryUi(snapshot, marker) && hasImplementPlanRequest(snapshot),
   );
-  if (hasRawProposedPlan(planSnapshot)) fail("raw <proposed_plan> tags are visible in the UI");
+  if (hasRawProposedPlan(snapshot)) fail("raw <proposed_plan> tags are visible in the UI");
 
   const planContexts = await markerContexts(cdp, marker);
   if (!markerContextLooksLikePlanUi(planContexts, marker)) {
-    fail(`Plan marker was visible, but not inside the dedicated Plan summary UI${formatSnapshotForFailure(planSnapshot)}`);
+    fail(`Plan marker was visible, but not inside the dedicated Plan summary UI${formatSnapshotForFailure(snapshot)}`);
   }
+  if (fs.existsSync(output)) fail(`Plan ${scenario} executed before user confirmation`);
+  return { marker, output, snapshot };
+}
 
-  if (planSnapshot.editableCount < 1) fail("Plan completion UI does not allow additional user input");
+async function waitForPlanRequestDismissal(cdp, label) {
+  return waitForSnapshot(
+    cdp,
+    deadlineFromNow(10_000),
+    label,
+    (snapshot) => !hasImplementPlanRequest(snapshot),
+  );
+}
+
+async function assertPlanDismissedWithoutExecution(cdp, request, label) {
+  const markerCount = occurrenceCount(request.snapshot.bodyText, request.marker);
+  await sleep(1_500);
+  const snapshot = await cdp.evaluate(snapshotExpression());
+  if (hasImplementPlanRequest(snapshot)) {
+    fail(`${label} restored the Plan implementation request${formatSnapshotForFailure(snapshot)}`);
+  }
+  if (fs.existsSync(request.output)) fail(`${label} unexpectedly executed the Plan`);
+  if (occurrenceCount(snapshot.bodyText, request.marker) !== markerCount) {
+    fail(`${label} unexpectedly submitted another Plan turn${formatSnapshotForFailure(snapshot)}`);
+  }
+}
+
+async function exercisePlanFlow(cdp, deadline, workspace) {
+  if (!workspace) fail("Plan flow requires a disposable workspace");
+
+  const revisionRequest = await createPlanRequest(cdp, deadline, workspace, "revision-close");
+  if (revisionRequest.snapshot.editableCount < 1) fail("Plan completion UI does not allow additional user input");
+
   const revisionMarker = `codex-plan-revision-${Date.now()}`;
   await insertComposerText(
     cdp,
@@ -1479,54 +1566,87 @@ async function exercisePlanFlow(cdp, deadline, workspace = null) {
     revisionMarker,
   );
   await submitComposer(cdp, revisionMarker);
-  await waitForSnapshot(
+  await waitForPlanRequestDismissal(cdp, "dismissed Plan request after additional input");
+  revisionRequest.snapshot = await waitForSnapshot(
     cdp,
     Math.min(deadline, deadlineFromNow(180_000)),
     "revised Plan summary and implementation request UI",
     (snapshot) => hasPlanSummaryUi(snapshot, revisionMarker) && hasImplementPlanRequest(snapshot),
   );
-
-  if (workspace) {
-    const implemented = await clickFirst(
-      cdp,
-      "implement this plan|implement plan|yes, implement|执行此计划|执行计划|实施此计划|实施计划|執行此計劃|執行計劃|實施此計劃",
-    );
-    if (!implemented) fail("Plan implementation action was not found");
-    const implementationDeadline = Math.min(deadline, deadlineFromNow(180_000));
-    let implementationSnapshot = null;
-    while (!fs.existsSync(implementationFile) && Date.now() <= implementationDeadline) {
-      implementationSnapshot = await cdp.evaluate(snapshotExpression());
-      if (implementationSnapshot.controls.some(isApprovalAllowControl)) break;
-      await sleep(500);
-    }
-    if (!fs.existsSync(implementationFile)) {
-      if (!implementationSnapshot?.controls.some(isApprovalAllowControl)) {
-        fail(`Plan implementation did not create output or request approval${formatSnapshotForFailure(implementationSnapshot)}`);
-      }
-      if (!(await pointerClickFirst(
-        cdp,
-        "(^|\\n)(Allow once|Run once|Approve once|允许一次|运行一次|允許一次|執行一次)(\\n|$)",
-      ))) {
-        fail("Plan implementation approval could not be accepted");
-      }
-    }
-    await waitForFile(
-      implementationFile,
-      implementationDeadline,
-      "Plan implementation output",
-    );
-    if (fs.readFileSync(implementationFile, "utf8").trim() !== implementationMarker) {
-      fail("Plan implementation output was incorrect");
-    }
-    await waitForTurnCompletion(
-      cdp,
-      Math.min(deadline, deadlineFromNow(180_000)),
-      "Plan implementation turn",
-    );
+  revisionRequest.marker = revisionMarker;
+  if (!(await pointerClickPlanRequest(cdp, "(^|\\n)(Close|Dismiss|关闭|關閉)(\\n|$)"))) {
+    fail("Plan implementation close action was not found");
   }
+  await waitForPlanRequestDismissal(cdp, "closed Plan implementation request");
+  await assertPlanDismissedWithoutExecution(cdp, revisionRequest, "closing the Plan request");
 
-  const beforeExit = await cdp.evaluate(snapshotExpression());
-  if (detectActivePlanMode(beforeExit)) await togglePlanModeShortcut(cdp);
+  const skippedRequest = await createPlanRequest(cdp, deadline, workspace, "skip");
+  if (!(await pointerClickPlanRequest(cdp, "(^|\\n)(Skip|跳过|跳過|略过|略過)(\\n|$)"))) {
+    fail("Plan implementation skip action was not found");
+  }
+  await waitForPlanRequestDismissal(cdp, "skipped Plan implementation request");
+  await assertPlanDismissedWithoutExecution(cdp, skippedRequest, "skipping the Plan request");
+
+  const implementationRequest = await createPlanRequest(cdp, deadline, workspace, "implement");
+  const implementationMarker = `codex-plan-implemented-${Date.now()}`;
+  await insertComposerText(
+    cdp,
+    `补充信息：实施时必须使用追加方式向 ${implementationRequest.output} 写入且只写入一行 ${implementationMarker}，仍然不要执行。`,
+    implementationMarker,
+  );
+  await submitComposer(cdp, implementationMarker);
+  await waitForPlanRequestDismissal(cdp, "dismissed Plan request before implementation revision");
+  implementationRequest.snapshot = await waitForSnapshot(
+    cdp,
+    Math.min(deadline, deadlineFromNow(180_000)),
+    "implementation-ready revised Plan request",
+    (snapshot) => hasPlanSummaryUi(snapshot, implementationMarker) && hasImplementPlanRequest(snapshot),
+  );
+  if (!(await pointerClickPlanRequest(
+    cdp,
+    "Yes, implement this plan|是，执行此计划|是，实施此计划|是，執行此計劃|是，實施此計劃",
+  ))) {
+    fail("Plan implementation action was not found");
+  }
+  await waitForPlanRequestDismissal(cdp, "dismissed Plan request after implementation selection");
+  await waitForSnapshot(
+    cdp,
+    deadlineFromNow(10_000),
+    "default mode after Plan implementation selection",
+    (snapshot) => !detectActivePlanMode(snapshot),
+  );
+
+  const implementationDeadline = Math.min(deadline, deadlineFromNow(180_000));
+  let implementationSnapshot = null;
+  while (!fs.existsSync(implementationRequest.output) && Date.now() <= implementationDeadline) {
+    implementationSnapshot = await cdp.evaluate(snapshotExpression());
+    if (implementationSnapshot.controls.some(isApprovalAllowControl)) break;
+    await sleep(500);
+  }
+  if (!fs.existsSync(implementationRequest.output)) {
+    if (!implementationSnapshot?.controls.some(isApprovalAllowControl)) {
+      fail(`Plan implementation did not create output or request approval${formatSnapshotForFailure(implementationSnapshot)}`);
+    }
+    if (!(await pointerClickFirst(
+      cdp,
+      "(^|\\n)(Allow once|Run once|Approve once|允许一次|运行一次|允許一次|執行一次)(\\n|$)",
+    ))) {
+      fail("Plan implementation approval could not be accepted");
+    }
+  }
+  await waitForFile(implementationRequest.output, implementationDeadline, "Plan implementation output");
+  if (fs.readFileSync(implementationRequest.output, "utf8") !== `${implementationMarker}\n`) {
+    fail("Plan implementation output was incorrect or was written more than once");
+  }
+  await waitForTurnCompletion(
+    cdp,
+    Math.min(deadline, deadlineFromNow(180_000)),
+    "Plan implementation turn",
+  );
+  const implementedSnapshot = await cdp.evaluate(snapshotExpression());
+  if (hasImplementPlanRequest(implementedSnapshot)) {
+    fail(`Plan implementation request returned after execution${formatSnapshotForFailure(implementedSnapshot)}`);
+  }
 
   const chatMarker = `codex-chat-smoke-${Date.now()}`;
   await insertComposerText(cdp, `请只回复 ${chatMarker}，不要拟定计划，不要执行任何操作。`, chatMarker);
@@ -1542,6 +1662,7 @@ async function exercisePlanFlow(cdp, deadline, workspace = null) {
   if (markerContextLooksLikePlanUi(chatContexts, chatMarker)) {
     fail("Shift+Tab did not exit Plan mode; follow-up response rendered as a Plan summary");
   }
+  if (hasImplementPlanRequest(chatSnapshot)) fail("Plan implementation request remained after normal follow-up chat");
   return chatMarker;
 }
 
@@ -1616,7 +1737,7 @@ async function runSmoke(options) {
     sourceUserData: options.sourceUserData,
     tempRoot: options.tempRoot,
   });
-  const workspace = mode === "core" || mode === "auth-probe"
+  const workspace = mode === "core" || mode === "auth-probe" || mode === "plan-flow"
     ? createTestWorkspace(options.tempRoot)
     : null;
   const reportDir = options.reportDir ? path.resolve(options.reportDir) : null;
@@ -1729,7 +1850,7 @@ async function runSmoke(options) {
     });
 
     if (mode === "auth-probe") await runStep("normal-chat", () => exerciseNormalChat(current.cdp, deadline));
-    if (mode === "plan-flow") await runStep("plan-flow", () => exercisePlanFlow(current.cdp, deadline));
+    if (mode === "plan-flow") await runStep("plan-flow", () => exercisePlanFlow(current.cdp, deadline, workspace));
     if (mode === "core") {
       const { persistenceMarker } = await exerciseCoreFlow(current.cdp, workspace, deadline, runStep);
       await runStep("conversation-restart", async () => {
@@ -1742,12 +1863,15 @@ async function runSmoke(options) {
         if (!snapshot.bodyText.includes(persistenceMarker)) {
           await openConversationFromSearch(current.cdp, conversationTitle, deadline);
         }
-        await waitForSnapshot(
+        const restored = await waitForSnapshot(
           current.cdp,
           Math.min(deadline, deadlineFromNow(60_000)),
           "restored test conversation",
           (value) => value.bodyText.includes(persistenceMarker),
         );
+        if (hasImplementPlanRequest(restored)) {
+          fail(`Plan implementation request returned after app restart${formatSnapshotForFailure(restored)}`);
+        }
       });
     }
     current.logs.assertNoFatal();
@@ -1821,6 +1945,7 @@ module.exports = {
   extractProposedPlan,
   formatSnapshotForFailure,
   fingerprintProfileSources,
+  hasImplementPlanRequest,
   isApprovalAllowControl,
   isApprovalDenyControl,
   isLoadingSubmitBlock,

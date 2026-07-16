@@ -156,12 +156,20 @@ failure.
 - `Shift+Tab` enters and exits Plan Mode and changes the visible active state.
 - A Plan response renders in the dedicated Plan layout without raw
   `<proposed_plan>` tags.
-- The Plan completion request exposes both implementation and additional-input
-  paths. Additional input updates the Plan; implementation performs the
-  expected workspace change.
-- A normal message after leaving Plan Mode does not render as a Plan.
+- The Plan completion request is backed by real conversation request state;
+  renderer-only synthetic requests are forbidden.
+- Additional input dismisses the previous request before rendering exactly one
+  revised Plan and a new request.
+- Skip and Close each dismiss the request without starting another turn or
+  changing the workspace.
+- Implementation dismisses the request before execution starts, returns to
+  Default mode, starts exactly one turn, and performs the expected workspace
+  change exactly once.
+- A normal message after implementation does not render as a Plan or restore
+  the completion request.
 - Restarting the installed app with the same cloned profile can find the saved
-  task through global search and restores the test conversation and its marker.
+  task through global search, restores the test conversation and its marker,
+  and does not restore a handled Plan completion request.
 
 Core acceptance intentionally excludes external MCP servers, plugins, Skills,
 browser access, voice, cloud tasks, and image generation. These may have
