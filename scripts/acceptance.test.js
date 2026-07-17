@@ -248,17 +248,23 @@ test("Plan implementation prompt detection does not confuse the action label wit
   assert.equal(hasImplementPlanRequest(snapshot("是，实施此计划")), false);
 });
 
-test("Plan implementation accepts a real manual approval before asserting output", () => {
+test("Plan implementation completes sequential approvals before asserting output", () => {
   const smoke = fs.readFileSync(path.join(__dirname, "smoke-linux-desktop.js"), "utf8");
+  const planFlow = smoke.slice(
+    smoke.indexOf("async function exercisePlanFlow"),
+    smoke.indexOf("async function exerciseCoreUi"),
+  );
   assert.match(smoke, /pointerClickPlanRequest/);
   assert.match(smoke, /dismissed Plan request after additional input/);
   assert.match(smoke, /closed Plan implementation request/);
   assert.match(smoke, /skipped Plan implementation request/);
   assert.match(smoke, /dismissed Plan request after implementation selection/);
-  assert.match(smoke, /Plan implementation approval could not be accepted/);
-  assert.match(smoke, /implementationSnapshot\.controls\.some\(isApprovalAllowControl\)/);
+  assert.ok(
+    planFlow.indexOf("await waitForTurnCompletion(") < planFlow.indexOf("await waitForFile("),
+    "Plan implementation must process every approval before checking its output",
+  );
   assert.match(smoke, /Plan implementation output was incorrect or was written more than once/);
-  assert.match(smoke, /await waitForTurnCompletion\(/);
+  assert.match(smoke, /if \(snapshot\.controls\.some\(isApprovalAllowControl\)\)/);
   assert.match(smoke, /Plan implementation turn/);
   assert.match(smoke, /Plan implementation request returned after app restart/);
 });

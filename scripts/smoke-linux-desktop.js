@@ -1626,32 +1626,15 @@ async function exercisePlanFlow(cdp, deadline, workspace) {
   );
 
   const implementationDeadline = Math.min(deadline, deadlineFromNow(180_000));
-  let implementationSnapshot = null;
-  while (!fs.existsSync(implementationRequest.output) && Date.now() <= implementationDeadline) {
-    implementationSnapshot = await cdp.evaluate(snapshotExpression());
-    if (implementationSnapshot.controls.some(isApprovalAllowControl)) break;
-    await sleep(500);
-  }
-  if (!fs.existsSync(implementationRequest.output)) {
-    if (!implementationSnapshot?.controls.some(isApprovalAllowControl)) {
-      fail(`Plan implementation did not create output or request approval${formatSnapshotForFailure(implementationSnapshot)}`);
-    }
-    if (!(await pointerClickFirst(
-      cdp,
-      "(^|\\n)(Allow once|Run once|Approve once|允许一次|运行一次|允許一次|執行一次)(\\n|$)",
-    ))) {
-      fail("Plan implementation approval could not be accepted");
-    }
-  }
+  await waitForTurnCompletion(
+    cdp,
+    implementationDeadline,
+    "Plan implementation turn",
+  );
   await waitForFile(implementationRequest.output, implementationDeadline, "Plan implementation output");
   if (fs.readFileSync(implementationRequest.output, "utf8") !== `${implementationMarker}\n`) {
     fail("Plan implementation output was incorrect or was written more than once");
   }
-  await waitForTurnCompletion(
-    cdp,
-    Math.min(deadline, deadlineFromNow(180_000)),
-    "Plan implementation turn",
-  );
   const implementedSnapshot = await cdp.evaluate(snapshotExpression());
   if (hasImplementPlanRequest(implementedSnapshot)) {
     fail(`Plan implementation request returned after execution${formatSnapshotForFailure(implementedSnapshot)}`);

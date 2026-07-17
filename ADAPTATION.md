@@ -165,6 +165,8 @@ failure.
 - Implementation dismisses the request before execution starts, returns to
   Default mode, starts exactly one turn, and performs the expected workspace
   change exactly once.
+- If implementation emits sequential command or file approval requests, accept
+  every request before asserting the exact workspace change.
 - A normal message after implementation does not render as a Plan or restore
   the completion request.
 - Restarting the installed app with the same cloned profile can find the saved
