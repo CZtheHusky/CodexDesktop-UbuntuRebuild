@@ -167,6 +167,8 @@ failure.
   change exactly once.
 - If implementation emits sequential command or file approval requests, accept
   every request before asserting the exact workspace change.
+- If repeated approvals show the Auto-review offer, keep manual approvals,
+  dismiss the offer, and require the composer to become interactive again.
 - A normal message after implementation does not render as a Plan or restore
   the completion request.
 - Restarting the installed app with the same cloned profile can find the saved

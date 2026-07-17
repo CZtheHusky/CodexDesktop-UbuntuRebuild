@@ -453,6 +453,12 @@ function isApprovalDenyControl(control) {
   return /(^|\n)(Deny|Decline|Reject|拒绝|拒絕)(\n|$)/i.test(controlHaystack(control));
 }
 
+function isManualApprovalNudgeControl(control) {
+  return /(^|\n)(Keep manual approvals|保留手动审批|保持手动审批|保留手動審批|保持手動審批)(\n|$)/i.test(
+    controlHaystack(control),
+  );
+}
+
 function safeArtifactName(value) {
   return String(value).replace(/[^a-zA-Z0-9._-]/g, "_");
 }
@@ -1215,6 +1221,21 @@ async function waitForTurnCompletion(cdp, deadline, label) {
       await sleep(500);
       continue;
     }
+    if (snapshot.controls.some(isManualApprovalNudgeControl)) {
+      if (!(await pointerClickFirst(
+        cdp,
+        "(^|\\n)(Keep manual approvals|保留手动审批|保持手动审批|保留手動審批|保持手動審批)(\\n|$)",
+      ))) {
+        fail(`${label} manual approval preference could not be kept`);
+      }
+      await waitForSnapshot(
+        cdp,
+        Math.min(deadline, deadlineFromNow(10_000)),
+        `${label} manual approval preference dismissal`,
+        (value) => !value.controls.some(isManualApprovalNudgeControl),
+      );
+      continue;
+    }
     const running = snapshot.controls.some((control) =>
       /(^|\n)(Steer|Stop|Cancel|指导|停止|取消|引導|終止)(\n|$)/i.test(controlHaystack(control))
     );
@@ -1940,6 +1961,7 @@ module.exports = {
   hasImplementPlanRequest,
   isApprovalAllowControl,
   isApprovalDenyControl,
+  isManualApprovalNudgeControl,
   isLoadingSubmitBlock,
   isDefaultApprovalControl,
   isSettingsSurface,

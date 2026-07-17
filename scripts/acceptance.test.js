@@ -14,6 +14,7 @@ const {
   hasImplementPlanRequest,
   isApprovalAllowControl,
   isApprovalDenyControl,
+  isManualApprovalNudgeControl,
   isDefaultApprovalControl,
   isLoadingSubmitBlock,
   isSettingsSurface,
@@ -140,6 +141,20 @@ test("approval actions do not confuse activity rows with decision buttons", () =
   assert.equal(isApprovalAllowControl(control("Running command for 1m")), false);
   assert.equal(isApprovalDenyControl(control("Deny")), true);
   assert.equal(isApprovalDenyControl(control("Denied by policy")), false);
+});
+
+test("turn completion keeps manual approvals when repeated approvals trigger the Auto-review nudge", () => {
+  const control = (text) => ({ aria: "", dataTestId: "", placeholder: "", text, title: "" });
+  assert.equal(isManualApprovalNudgeControl(control("Keep manual approvals")), true);
+  assert.equal(isManualApprovalNudgeControl(control("Approve for me")), false);
+
+  const smoke = fs.readFileSync(path.join(__dirname, "smoke-linux-desktop.js"), "utf8");
+  const completion = smoke.slice(
+    smoke.indexOf("async function waitForTurnCompletion"),
+    smoke.indexOf("async function currentConversationTitle"),
+  );
+  assert.match(completion, /snapshot\.controls\.some\(isManualApprovalNudgeControl\)/);
+  assert.match(completion, /manual approval preference dismissal/);
 });
 
 test("native picker discovery does not depend on the currently focused X11 window", () => {
